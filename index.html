@@ -256,7 +256,7 @@ function similaridade(a,b){
 function novoEstado(){
   const t=new Date();
   return {v:1, ano:t.getFullYear(), seq:1, meds:[], eps:[], cobertura:null, ultimoDia:null,
-          indImp:{}, param:{tolerancia:0, denom:{}, hoje:''}, log:[], csv:null, historicoOk:false};
+          indImp:{}, param:{tolerancia:180, denom:{}, hoje:''}, log:[], csv:null, historicoOk:false};
 }
 function migrar(o){
   const b=novoEstado(); const s=Object.assign(b,o);
@@ -1457,9 +1457,9 @@ function renderParam(){
       <span class="muted small" style="font-size:11px">${nota}</span></div>`; }).join('');
   el.innerHTML=`<div class="grid2">
     <div class="card"><h2>Consulta de paciente</h2>
-      <p class="lead">O paciente perde o processo quando os dias sem cobertura (atraso menos dias em falta) superam a tolerância abaixo.</p>
+      <p class="lead">O paciente <b>não perde o processo</b> quando a falta do medicamento no período somada à tolerância abaixo é maior ou igual ao atraso — ou seja, quando os dias sem cobertura (atraso menos dias em falta) não superam a tolerância.</p>
       <div class="row"><div class="field" style="max-width:180px"><label for="pmTol">Tolerância (dias)</label><input type="number" id="pmTol" min="0" step="1" value="${+S.param.tolerancia||0}" data-chg="pmTol"></div>
-      <span class="muted small" style="flex:1;min-width:200px;padding-bottom:9px">Com 0, o atraso precisa estar totalmente coberto pelos dias em falta.</span></div></div>
+      <span class="muted small" style="flex:1;min-width:220px;padding-bottom:9px">Padrão de 180 dias (prazo que o paciente tem mesmo sem falta do medicamento). Ajuste se a sua unidade usa outro prazo; com 0, o atraso precisa estar totalmente coberto pelos dias em falta.</span></div></div>
     <div class="card"><h2>Data de referência</h2>
       <p class="lead">Normalmente o sistema usa a data do computador como “hoje”. Informe uma data só para lançar ou conferir um dia passado.</p>
       <div class="row"><div class="field" style="max-width:190px"><label for="pmHoje">Data de “hoje” manual</label><input type="date" id="pmHoje" value="${esc(S.param.hoje||'')}" data-chg="pmHoje"></div>
