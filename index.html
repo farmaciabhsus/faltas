@@ -164,7 +164,7 @@ table.grade td{padding:4px 8px}
 table.grade input[type=date]{min-height:30px;padding:3px 6px;font-size:12.5px;width:auto;min-width:132px}
 table.grade select{min-width:200px;max-width:260px}
 .pick-pop:empty{display:none}
-@media (max-width:720px){.export-bar{position:static;bottom:auto}}
+@media (max-width:720px){.export-bar{bottom:6px;padding:10px 12px;gap:10px 18px}}
 .mot{display:flex;gap:4px;align-items:center}
 .okbtn{border:1.5px solid var(--amber);background:#fff;color:var(--amber);border-radius:6px;width:30px;height:30px;cursor:pointer;font-weight:800;flex-shrink:0}
 .okbtn:hover{background:var(--amber);color:#fff}
@@ -218,6 +218,7 @@ input.inl.al{margin-top:4px;font-size:12px;color:var(--ink-soft)}
   <section id="tab-consulta" class="tab" role="tabpanel"></section>
   <section id="tab-import" class="tab" role="tabpanel"></section>
   <section id="tab-param" class="tab" role="tabpanel"></section>
+  <div class="export-bar hidden" id="rtExport" aria-label="Exportações"></div>
 </main>
 <div class="modal-back" id="modalBack"><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -283,12 +284,14 @@ const decodeEnt = s => String(s).replace(/&#(\d+);/g,(m,n)=>String.fromCharCode(
   .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&nbsp;/g,' ');
 const norm = s => decodeEnt(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
 const cmpNome = (a,b) => norm(a.nome).localeCompare(norm(b.nome),'pt-BR');
-function tokens(s){ return norm(s).replace(/[()+]/g,' ').replace(/\s+/g,' ').trim().split(' ').filter(Boolean); }
+const TOKC=new Map();
+function tokens(s){ const k=String(s??''); let t=TOKC.get(k); if(!t){ t=norm(k).replace(/[()+,;\/-]/g,' ').replace(/(\d)([A-Z])/g,'$1 $2').replace(/([A-Z])(\d)/g,'$1 $2').replace(/\s+/g,' ').trim().split(' ').filter(Boolean); TOKC.set(k,t); } return t; }
 function similaridade(a,b){
   const A=tokens(a), B=tokens(b);
   const nA=new Set(A.filter(t=>/\d/.test(t))), nB=new Set(B.filter(t=>/\d/.test(t)));
   if(nA.size!==nB.size || [...nA].some(t=>!nB.has(t))) return 0;   // dosagens precisam ser idênticas
-  const sA=new Set(A), sB=new Set(B); let i=0; sA.forEach(t=>{ if(sB.has(t)) i++; });
+  const sA=new Set(A), sB=new Set(B); let i=0;   // abreviações contam: CAPS ≈ CAPSULA, COMP ≈ COMPRIMIDO
+  sA.forEach(t=>{ if(sB.has(t) || (t.length>=3 && !/\d/.test(t) && [...sB].some(u=>u.length>=3 && (u.startsWith(t)||t.startsWith(u))))) i++; });
   return i/(sA.size+sB.size-i);
 }
 
@@ -301,7 +304,7 @@ function novoEstado(){
 function migrar(o){
   const b=novoEstado(); const s=Object.assign(b,o);
   s.param=Object.assign(b.param,o.param||{}); s.param.denom=s.param.denom||{};
-  s.indImp=s.indImp||{}; s.log=s.log||[]; return s;
+  s.indImp={}; s.param.hoje=''; s.log=s.log||[]; return s;   /* indicador sempre calculado; data manual não sobrevive ao recarregar */
 }
 let storageOk = true;
 function carregar(){
@@ -340,6 +343,14 @@ const achaMed = nome => IDX.key.get(norm(nome));
 function sobrepoe(medId,ini,fim,ignorar){
   return (IDX.eps.get(medId)||[]).find(e=> e.id!==ignorar && !((e.fim && e.fim<ini) || (fim && fim<e.ini)));
 }
+/* Medicamentos do cadastro mais parecidos com m (para "outros nomes" e "Unir a outro") */
+function parecidosCom(m,n=5,min=0.3){
+  const out=[];
+  S.meds.forEach(x=>{ if(x.id===m.id) return;
+    let best=0; [m.nome,...(m.alias||[])].forEach(a=>{ best=Math.max(best,similaridade(a,x.nome)); (x.alias||[]).forEach(b=>{ best=Math.max(best,similaridade(a,b)); }); });
+    if(best>=min) out.push({med:x,score:best}); });
+  return out.sort((a,b)=>b.score-a.score||cmpNome(a.med,b.med)).slice(0,n);
+}
 function sugerir(nome,n=3){
   const out=[];
   S.meds.forEach(m=>{
@@ -368,14 +379,14 @@ function diasPorMed(ano){
   return res;
 }
 /* Denominador do indicador (total de itens monitorados no mês), com preenchimento automático:
-   usa o valor do mês se foi informado (digitado ou importado do arquivo Indicador de Falta);
+   usa o valor do mês se foi informado em Parametrização;
    senão repete o último valor informado em um mês anterior do mesmo ano; sem nenhum, usa o padrão. */
 function denomEfetivo(mes){
   if(S.param.denom[mes]) return {val:+S.param.denom[mes], origem:'definido'};
   for(let m=mes-1;m>=1;m--){ if(S.param.denom[m]) return {val:+S.param.denom[m], origem:'herdado',de:m}; }
   return {val:DENOM_PADRAO, origem:'padrao'};
 }
-/* Contagem diária por motivo (para o Indicador). Dias importados do arquivo "Indicador" prevalecem. */
+/* Contagem diária por motivo (para o Indicador) — sempre calculada a partir das faltas registradas. */
 function indicadorMes(ano, mi){
   const H=hoje(), nd=daysInMonth(ano,mi+1), {val:denom}=denomEfetivo(mi+1), rows=[];
   const cont={}; for(let d=1; d<=nd; d++) cont[d]={md:0,ee:0,ds:0,rf:0};
@@ -386,7 +397,7 @@ function indicadorMes(ano, mi){
     for(let n=dnum(ini); n<=dnum(fim); n++){ cont[+dfrom(n).slice(8,10)][col]++; }
   });
   for(let d=1; d<=nd; d++){
-    const iso=isoOf(ano,mi+1,d); const imp=S.indImp[iso];
+    const iso=isoOf(ano,mi+1,d), imp=null;
     if(!imp && iso>H){ rows.push({dia:d,iso,vazio:true}); continue; }
     const v = imp ? {md:imp.md||0,ee:imp.ee||0,ds:imp.ds||0,rf:imp.rf||0} : cont[d];
     const n=v.md+v.ee;
@@ -458,7 +469,7 @@ function marcarSalvo(t){ if(!t) return; t.classList.remove('err'); t.classList.a
 ACT.fechar=()=>fecharModal();
 
 /* ---------- leitura de arquivos ---------- */
-const ACEITA={hist:'.xlsx,.xls',csv:'.csv,.txt',plan:'.xlsm,.xlsx,.xls',ind:'.xlsx,.xls',backup:'.json'};
+const ACEITA={hist:'.xlsx,.xls',csv:'.csv,.txt',backup:'.json'};
 function escolherArquivo(what){
   const inp=$('#fileInput'); inp.value=''; inp.accept=ACEITA[what]||'';
   inp.onchange=()=>{ const f=inp.files[0]; if(f) processarArquivo(what,f); };
@@ -468,8 +479,6 @@ async function processarArquivo(what,file){
   try{
     if(what==='hist') await iniciarHistorico(file);
     else if(what==='csv') await iniciarCSV(file);
-    else if(what==='plan') await iniciarPlanilha(file);
-    else if(what==='ind') await iniciarIndicador(file);
     else if(what==='backup') await restaurarBackup(file);
   }catch(err){ console.error(err); modalMsg('Não foi possível ler o arquivo',`<p>${esc(err.message||err)}</p><p class="muted small">Confira se é o arquivo certo para esta importação: ${esc(file.name)}</p>`); }
 }
@@ -573,8 +582,8 @@ function renderHist(){
       <div class="kpi"><div class="v">${R.eps.length}</div><div class="l">faltas (períodos contínuos) encontradas</div></div>
       <div class="kpi"><div class="v">${abertos}</div><div class="l">em falta na última data (${fmtBR(R.ultimoISO)})</div></div>
       <div class="kpi"><div class="v">${R.dm}</div><div class="l">dias-medicamento em falta</div></div></div>
-    ${incertos?`<div class="msg info"><b>${incertos}</b> ${plural(incertos,'falta começa','faltas começam')} em 01/01/${P.ano}, o primeiro dia da planilha — a data real de início pode ser anterior. Depois você pode corrigir direto na <i>Rotina do dia</i> ou importando a Planilha de Faltas (Importações, opcional).</div>`:''}
-    <div class="msg info">Todos os períodos importados ficam com o motivo <b>${esc(MOTIVOS[0].nome)}</b> (o histórico não guarda motivo). Ajuste na Rotina do dia ou importe a Planilha de Faltas para trazer os motivos reais.</div>
+    ${incertos?`<div class="msg info"><b>${incertos}</b> ${plural(incertos,'falta começa','faltas começam')} em 01/01/${P.ano}, o primeiro dia da planilha — a data real de início pode ser anterior. Depois você pode corrigir direto na <i>Rotina do dia</i>.</div>`:''}
+    <div class="msg info">Todos os períodos importados ficam com o motivo <b>${esc(MOTIVOS[0].nome)}</b> (o histórico não guarda motivo). Ajuste os motivos na Rotina do dia.</div>
     ${P.avisos.length?`<div class="msg warn">${P.avisos.slice(0,4).map(esc).join('<br>')}</div>`:''}
     <h3>Nomes parecidos que podem ser o mesmo medicamento</h3>
     ${P.sug.length?`<p class="muted small">Nunca aparecem juntos no mesmo mês, e a dosagem é igual. Desmarque se forem medicamentos diferentes.</p>
@@ -615,24 +624,26 @@ async function iniciarCSV(file){
   if(!S.meds.length){ return modalMsg('Importe o histórico primeiro','<p>Ainda não há medicamentos cadastrados. Comece pela importação do <b>Med_em_falta_Consolidado</b>.</p>'); }
   const totais=[], visto=new Set();
   csv.itens.forEach(i=>{ if(norm(i.status)==='TOTALMENTE DESABASTECIDO' && !visto.has(i.k)){ visto.add(i.k); totais.push(i); } });
-  PLAN={tipo:'csv',arquivo:file.name,csv,totais,dataLanc:hoje(),escolha:{},incluir:{},motivo:{},acaoSai:{}};
+  PLAN={tipo:'csv',arquivo:file.name,csv,totais,dataLanc:hoje(),escolha:{},incluir:{},motivo:{}};
   totais.forEach(t=>{ if(!achaMed(t.nome)){ const s=sugerir(t.nome); PLAN.escolha[t.k]=(s[0]&&s[0].score>=0.75)?s[0].med.id:'__novo'; } });
   abrirInline(renderCSV);
 }
+/* A lista mais recente substitui as anteriores: o que está nela fica em falta; o que não está sai.
+   Faltas lançadas por um CSV anterior na mesma data (ou depois) são apagadas, não encerradas. */
+const fechadaOntem=(medId,dl)=>(IDX.eps.get(medId)||[]).find(e=>e.fim===addDays(dl,-1));
+const descartavelCSV=(e,dl)=>e.origem==='csv'&&e.ini>=dl;
 function resolverCSV(P){
-  const linhas=[]; const usados=new Set();
+  const linhas=[]; const usados=new Set(), dl=P.dataLanc;
   P.totais.forEach(t=>{
     let medId=achaMed(t.nome), semCad=false;
     if(!medId){ semCad=true; const e=P.escolha[t.k]; medId=(e&&e!=='__novo')?e:null; }
-    const ab=medId?epAberto(medId):null;
+    const ab=medId?(epAberto(medId)||fechadaOntem(medId,dl)):null;
     const dup=medId&&usados.has(medId); if(medId) usados.add(medId);
     linhas.push({t,medId,semCad,estado:(medId&&ab)?'continua':'novo',dup});
   });
   const ids=new Set(linhas.filter(l=>l.medId).map(l=>l.medId));
-  const sai=S.eps.filter(e=>!e.fim&&e.lista===true&&!ids.has(e.med));
-  const reativa=S.eps.filter(e=>!e.fim&&e.lista!==true&&ids.has(e.med));
-  const fora=S.eps.filter(e=>!e.fim&&e.lista==null&&!ids.has(e.med));
-  return {linhas,sai,reativa,fora};
+  const sai=S.eps.filter(e=>!e.fim&&e.motivo!==MOTIVO_SUSP&&!ids.has(e.med));
+  return {linhas,sai};
 }
 function optMotivos(sel){ return `<option value="">Selecione…</option>`+MOTIVOS.map(m=>`<option ${m.nome===sel?'selected':''}>${esc(m.nome)}</option>`).join(''); }
 function renderCSV(){
@@ -656,9 +667,10 @@ function renderCSV(){
       <td class="name">${esc(l.t.nome)}</td><td>${fmtBR(P.dataLanc)}</td>
       <td><select data-chg="csvMot" data-k="${esc(k)}" class="${inc&&!mv?'sel-warn':''}" ${inc?'':'disabled'}>${optMotivos(mv)}</select></td></tr>`; }).join('');
   const linhasSai=R.sai.map(e=>`<tr><td class="name">${esc(medDe(e).nome)}</td><td>${fmtBR(e.ini)}</td>
-      <td><select data-chg="csvSai" data-id="${e.id}"><option value="encerrar" ${(P.acaoSai[e.id]||'encerrar')==='encerrar'?'selected':''}>Encerrar falta (voltou ao estoque)</option><option value="manter" ${P.acaoSai[e.id]==='manter'?'selected':''}>Manter em falta, fora da planilha diária</option></select></td></tr>`).join('');
+      <td>${descartavelCSV(e,P.dataLanc)?'<span class="badge b-gray">removido (veio de lista anterior do mesmo dia)</span>':`<span class="badge b-green">encerrada — último dia ${fmtBR(addDays(P.dataLanc,-1)<e.ini?e.ini:addDays(P.dataLanc,-1))}</span>`}</td></tr>`).join('');
   return {titulo:'Conferir lista diária antes de atualizar',
-    corpo:`<p class="muted small" style="margin-top:0">Arquivo: <b>${esc(P.arquivo)}</b>${c.dataLista?` — lista de <b>${fmtBR(c.dataLista)}</b>`:''}. Itens no arquivo: ${c.itens.length} ·
+    corpo:`<div class="msg info" style="margin-top:0">Esta lista <b>substitui</b> as anteriores: só ficam em falta os itens “totalmente desabastecidos” deste arquivo (e os suspensos temporariamente). Importar de novo no mesmo dia sobrescreve a importação anterior.</div>
+    <p class="muted small" style="margin-top:0">Arquivo: <b>${esc(P.arquivo)}</b>${c.dataLista?` — lista de <b>${fmtBR(c.dataLista)}</b>`:''}. Itens no arquivo: ${c.itens.length} ·
       <b>Totalmente desabastecido: ${cont('Totalmente desabastecido')}</b> · Sem demanda: ${cont('Sem Demanda')} · Sem falta: ${c.itens.filter(i=>!i.status).length}. Só os “totalmente desabastecidos” entram na planilha diária.</p>
     <div class="row" style="margin:8px 0 4px"><div class="field" style="max-width:190px"><label for="cLanc">Data de lançamento (dia 1 em falta dos novos)</label><input type="date" id="cLanc" value="${P.dataLanc}" data-chg="csvData"></div></div>
     ${semCad.length?`<h3>Nomes que não constam no cadastro (${semCad.length})</h3><p class="muted small">Vincule ao medicamento certo (o nome do CSV passa a ser reconhecido nas próximas vezes) ou cadastre como novo.</p>
@@ -666,20 +678,19 @@ function renderCSV(){
     <h3>Entram em falta (${novos.length})</h3>
     ${novos.length?`<p class="muted small">Início = data de lançamento. O motivo é escolhido por você.</p><div class="tbl-wrap"><table class="t"><thead><tr><th></th><th>Medicamento</th><th>Início</th><th>Motivo</th></tr></thead><tbody>${linhasNovos}</tbody></table></div>`:'<p class="muted small">Nenhum item novo.</p>'}
     <h3>Saem da planilha diária (${R.sai.length})</h3>
-    ${R.sai.length?`<p class="muted small">Estavam na planilha e não constam mais como totalmente desabastecidos no CSV.</p><div class="tbl-wrap"><table class="t"><thead><tr><th>Medicamento</th><th>Em falta desde</th><th>O que fazer</th></tr></thead><tbody>${linhasSai}</tbody></table></div>`:'<p class="muted small">Nenhum item saiu.</p>'}
+    ${R.sai.length?`<p class="muted small">Estavam em falta no sistema e não constam como totalmente desabastecidos neste CSV.</p><div class="tbl-wrap"><table class="t"><thead><tr><th>Medicamento</th><th>Em falta desde</th><th>Resultado</th></tr></thead><tbody>${linhasSai}</tbody></table></div>`:'<p class="muted small">Nenhum item saiu.</p>'}
     <h3>Continuam (${cont2.length})</h3>
-    <p class="muted small">Mantêm início e motivo já registrados.${R.reativa.length?` ${R.reativa.length} ${plural(R.reativa.length,'item volta','itens voltam')} à planilha diária.`:''}${R.fora.length?` ${R.fora.length} ${plural(R.fora.length,'item em falta no sistema não consta','itens em falta no sistema não constam')} como totalmente desabastecido${R.fora.length>1?'s':''} e ficam fora da planilha.`:''}</p>
-    ${cont2.length?`<details><summary>Ver os ${cont2.length} itens</summary><div class="tbl-wrap"><table class="t"><tbody>${cont2.map(l=>`<tr><td class="name">${esc(medDe(epAberto(l.medId)).nome)}</td><td>desde ${fmtBR(epAberto(l.medId).ini)}</td></tr>`).join('')}</tbody></table></div></details>`:''}`,
+    <p class="muted small">Mantêm início e motivo já registrados.</p>
+    ${cont2.length?`<details><summary>Ver os ${cont2.length} itens</summary><div class="tbl-wrap"><table class="t"><tbody>${cont2.map(l=>{ const e=epAberto(l.medId)||fechadaOntem(l.medId,P.dataLanc); return `<tr><td class="name">${esc(medDe(e).nome)}</td><td>desde ${fmtBR(e.ini)}</td></tr>`; }).join('')}</tbody></table></div></details>`:''}`,
     rodape:`<span class="spacer">${pend?`Falta escolher o motivo de ${pend} ${plural(pend,'item')}.`:'Tudo pronto para atualizar.'}</span><button class="btn ghost" data-act="fechar">Cancelar</button><button class="btn" data-act="csvAplicar" ${pend?'disabled':''}>Aplicar a lista</button>`};
 }
 CHG.csvData=t=>{ if(validISO(t.value)){ PLAN.dataLanc=t.value; desenharModal(true); } };
 CHG.csvLink=t=>{ PLAN.escolha[t.dataset.k]=t.value; desenharModal(true); };
 CHG.csvInc=t=>{ PLAN.incluir[t.dataset.k]=t.checked; desenharModal(true); };
 CHG.csvMot=t=>{ PLAN.motivo[t.dataset.k]=t.value; desenharModal(true); };
-CHG.csvSai=t=>{ PLAN.acaoSai[t.dataset.id]=t.value; };
 ACT.csvAplicar=()=>{
   const P=PLAN, dl=P.dataLanc; guardarAnterior(); RECENT.clear(); UI.sit='aberto';
-  let criados=0, novos=0, enc=0, cont=0, fora=0;
+  let criados=0, novos=0, enc=0, cont=0, rem=0;
   P.totais.forEach(t=>{           // 1) resolve/cadastra medicamentos
     let medId=achaMed(t.nome);
     if(!medId){ const e=P.escolha[t.k];
@@ -687,10 +698,18 @@ ACT.csvAplicar=()=>{
       else { medId=nid('m'); S.meds.push({id:medId,nome:t.nome,alias:[],origem:'importado'}); criados++; } }
     t._med=medId; reindex();
   });
-  const ids=new Set();
-  P.totais.forEach(t=>{           // 2) episódios
-    const medId=t._med; if(ids.has(medId)) return; ids.add(medId);
-    const ab=epAberto(medId);
+  const ids=new Set(P.totais.map(t=>t._med));
+  // 2) sobrescreve: tudo que não está na lista mais recente sai (exceto suspensos)
+  S.eps.filter(e=>!e.fim&&e.motivo!==MOTIVO_SUSP&&!ids.has(e.med)).forEach(e=>{
+    if(descartavelCSV(e,dl)){ S.eps.splice(S.eps.indexOf(e),1); rem++; }
+    else { const f=addDays(dl,-1); e.fim=f<e.ini?e.ini:f; e.lista=false; enc++; }
+  });
+  reindex();
+  const vistos=new Set();
+  P.totais.forEach(t=>{           // 3) quem está na lista fica em falta
+    const medId=t._med; if(vistos.has(medId)) return; vistos.add(medId);
+    let ab=epAberto(medId);
+    if(!ab){ const ont=fechadaOntem(medId,dl); if(ont){ ont.fim=null; ab=ont; } }   // fechada ontem por outra lista: continua
     if(ab){ ab.lista=true; cont++; }
     else if(P.incluir[t.k]!==false){
       let ini=dl; const fechados=(IDX.eps.get(medId)||[]).filter(e=>e.fim&&e.fim>=ini);
@@ -699,152 +718,9 @@ ACT.csvAplicar=()=>{
       S.eps.push({id:idN,med:medId,ini,fim:null,motivo:P.motivo[t.k],mi:true,lista:true,prev:'',iniIncerto:false,origem:'csv'}); novos++;
     }
   });
-  S.eps.filter(e=>!e.fim&&e.lista===true&&!ids.has(e.med)).forEach(e=>{
-    if((P.acaoSai[e.id]||'encerrar')==='encerrar'){ const f=addDays(dl,-1); e.fim=f<e.ini?e.ini:f; enc++; } else { e.lista=false; fora++; }
-  });
-  S.eps.filter(e=>!e.fim&&e.lista==null&&!ids.has(e.med)).forEach(e=>{ e.lista=false; });
   S.csv={arquivo:P.arquivo,dataLista:P.csv.dataLista,dataLanc:dl,aplicadoEm:agoraBR(),total:ids.size};
-  logar('Lista diária (CSV)',P.arquivo,`${novos} ${plural(novos,'nova','novas')} · ${enc} ${plural(enc,'encerrada','encerradas')} · ${cont} continuam${criados?` · ${criados} cadastrados`:''}`);
-  fecharModal(); commit(); toast(`Lista aplicada: ${novos} novas (em verde, no topo), ${enc} encerradas, ${cont} continuam.`);
-};
-
-/* =====================================================================
-   IMPORTAÇÃO 3 (opcional) — Planilha de Faltas anterior (.xlsm/.xlsx)
-   traz "dia entrada em falta" reais e motivos
-   ===================================================================== */
-function motivoDe(v){
-  const n=norm(v); if(!n) return null;
-  const m=MOTIVOS.find(x=>norm(x.nome)===n); if(m) return m.nome;
-  if(n.includes('ESTADUAL')) return MOTIVOS[1].nome; if(n.includes('SUSPENS')) return MOTIVOS[2].nome; if(n.includes('RECOLH')) return MOTIVOS[3].nome;
-  return MOTIVOS[0].nome;
-}
-async function iniciarPlanilha(file){
-  if(!S.meds.length) return modalMsg('Importe o histórico primeiro','<p>Ainda não há medicamentos cadastrados.</p>');
-  const wb=lerWB(await file.arrayBuffer());
-  const sn=wb.SheetNames.find(n=>norm(n)==='FALTAS')||wb.SheetNames[0];
-  const rows=sheetRows(wb.Sheets[sn],12,700);
-  const h=rows.findIndex(r=>norm(r[0]).startsWith('MEDICAMENTO EM FALTA'));
-  if(h<0) throw new Error('Não encontrei o cabeçalho "MEDICAMENTO EM FALTA". Este importador espera a Planilha de Faltas diária.');
-  const itens=[], avisos=[]; let modo='falta';
-  for(let r=h+1;r<rows.length;r++){
-    const row=rows[r], a=row[0];
-    if(typeof a==='string' && norm(a).startsWith('MEDICAMENTO SUSPENSO')){ modo='susp'; continue; }
-    if(typeof a!=='string'||!a.trim()) { if(modo==='falta'&&itens.length) { /* linha em branco separa as tabelas */ } continue; }
-    const ini=parseDataQualquer(row[1]); const nome=a.replace(/\s+/g,' ').trim();
-    if(!ini){ avisos.push(`"${nome}": data de entrada inválida — ignorado.`); continue; }
-    let prev=parseDataQualquer(row[4]); if(!prev) prev='';
-    itens.push({nome,k:norm(nome),ini,motivo:modo==='susp'?MOTIVO_SUSP:(motivoDe(row[5])||MOTIVOS[0].nome),prev});
-  }
-  if(!itens.length) throw new Error('A planilha não tem itens em falta para importar.');
-  PLAN={tipo:'plan',arquivo:file.name,itens,avisos,escolha:{},incluir:{},datas:{}};
-  itens.forEach(t=>{ if(!achaMed(t.nome)){ const s=sugerir(t.nome); PLAN.escolha[t.k]=(s[0]&&s[0].score>=0.75)?s[0].med.id:'__novo'; } });
-  abrirModal(renderPlanilha);
-}
-function resolverPlanilha(P){
-  return P.itens.map(t=>{
-    let medId=achaMed(t.nome), semCad=false; if(!medId){ semCad=true; const e=P.escolha[t.k]; medId=(e&&e!=='__novo')?e:null; }
-    const ab=medId?epAberto(medId):null; let tipo='novo', dif=null;
-    if(ab){ tipo='atualiza'; if(ab.ini!==t.ini) dif=t.ini<ab.ini?'antes':'depois'; }
-    return {t,medId,semCad,ab,tipo,dif};
-  });
-}
-function renderPlanilha(){
-  const P=PLAN, L=resolverPlanilha(P);
-  const linhas=L.map(l=>{
-    const k=l.t.k, inc=P.incluir[k]!==false;
-    let acao='';
-    if(l.semCad){ const sug=sugerir(l.t.nome), sel=P.escolha[k]; const ids=new Set(sug.map(s=>s.med.id));
-      acao=`<select data-chg="plLink" data-k="${esc(k)}" style="max-width:300px"><option value="__novo" ${sel==='__novo'?'selected':''}>Cadastrar como novo</option>${sug.length?`<optgroup label="Parecidos">${sug.map(s=>`<option value="${s.med.id}" ${sel===s.med.id?'selected':''}>${Math.round(s.score*100)}% — ${esc(s.med.nome)}</option>`).join('')}</optgroup>`:''}<optgroup label="Todos">${S.meds.filter(m=>!ids.has(m.id)).sort(cmpNome).map(m=>`<option value="${m.id}" ${sel===m.id?'selected':''}>${esc(m.nome)}</option>`).join('')}</optgroup></select><br>`; }
-    let det='';
-    if(l.tipo==='novo') det=`<span class="badge b-amber">Novo</span> em falta desde ${fmtBR(l.t.ini)}`;
-    else if(!l.dif) det=`<span class="badge b-green">Confere</span> início ${fmtBR(l.t.ini)}`;
-    else {
-      const d=P.datas[k]||(l.dif==='antes'&&(l.ab.iniIncerto||l.t.ini<(S.cobertura&&S.cobertura.ini||''))?'planilha':'sistema');
-      det=`<span class="badge ${d==='planilha'?'b-blue':'b-amber'}">Data diferente</span> sistema ${fmtBR(l.ab.ini)}${l.ab.iniIncerto?' (início truncado em 01/01)':''} × planilha ${fmtBR(l.t.ini)}${l.t.ini<(S.cobertura&&S.cobertura.ini||'')?' (antes do início do histórico importado)':''}
-        <select data-chg="plData" data-k="${esc(k)}" style="margin-left:6px"><option value="planilha" ${d==='planilha'?'selected':''}>Usar a da planilha</option><option value="sistema" ${d==='sistema'?'selected':''}>Manter a do sistema</option></select>`;
-    }
-    return `<tr><td><input type="checkbox" data-chg="plInc" data-k="${esc(k)}" ${inc?'checked':''} aria-label="Incluir"></td><td class="name">${esc(l.t.nome)}<span class="alias">${acao}</span></td><td>${det}</td><td>${esc(l.t.motivo)}</td></tr>`;
-  }).join('');
-  return {titulo:'Conferir Planilha de Faltas antes de importar',
-    corpo:`<p class="muted small" style="margin-top:0">Arquivo: <b>${esc(P.arquivo)}</b> — ${P.itens.length} itens. Traz a <b>data real de entrada em falta</b> e o <b>motivo</b>, e marca os itens como parte da planilha diária. Itens em falta no sistema que não estão nesta planilha não são alterados.</p>
-      ${P.avisos.length?`<div class="msg warn">${P.avisos.map(esc).join('<br>')}</div>`:''}
-      <div class="tbl-wrap"><table class="t"><thead><tr><th></th><th>Medicamento</th><th>Situação</th><th>Motivo</th></tr></thead><tbody>${linhas}</tbody></table></div>`,
-    rodape:`<button class="btn ghost" data-act="fechar">Cancelar</button><button class="btn" data-act="plAplicar">Importar planilha</button>`};
-}
-CHG.plLink=t=>{ PLAN.escolha[t.dataset.k]=t.value; desenharModal(true); };
-CHG.plInc=t=>{ PLAN.incluir[t.dataset.k]=t.checked; desenharModal(true); };
-CHG.plData=t=>{ PLAN.datas[t.dataset.k]=t.value; desenharModal(true); };
-ACT.plAplicar=()=>{
-  const P=PLAN; guardarAnterior(); let n=0, novos=0, ext=0;
-  P.itens.forEach(t=>{
-    if(P.incluir[t.k]===false) return;
-    let medId=achaMed(t.nome);
-    if(!medId){ const e=P.escolha[t.k];
-      if(e&&e!=='__novo'){ medId=e; const m=S.meds.find(x=>x.id===e); (m.alias=m.alias||[]).push(t.nome); }
-      else { medId=nid('m'); S.meds.push({id:medId,nome:t.nome,alias:[],origem:'importado'}); } }
-    reindex(); const ab=epAberto(medId);
-    if(ab){
-      const dif=ab.ini!==t.ini?(t.ini<ab.ini?'antes':'depois'):null;
-      const d=P.datas[t.k]||(dif==='antes'&&(ab.iniIncerto||t.ini<(S.cobertura&&S.cobertura.ini||''))?'planilha':'sistema');
-      if(dif&&d==='planilha'){
-        let ini=t.ini;
-        if(dif==='antes'){ (IDX.eps.get(medId)||[]).filter(e=>e.id!==ab.id&&e.fim&&e.fim>=ini).forEach(e=>{ if(e.ini<ini) ini=e.ini; S.eps.splice(S.eps.indexOf(e),1); }); }
-        ab.ini=ini; ab.iniIncerto=false; ext++;
-      }
-      ab.motivo=t.motivo; ab.mi=true; ab.lista=(t.motivo!==MOTIVO_SUSP); ab.prev=t.prev||ab.prev||''; n++;
-    } else {
-      let ini=t.ini; const fech=(IDX.eps.get(medId)||[]).filter(e=>e.fim&&e.fim>=ini);
-      if(fech.length) ini=addDays(fech.reduce((m,e)=>e.fim>m?e.fim:m,ini),1);
-      S.eps.push({id:nid('e'),med:medId,ini,fim:null,motivo:t.motivo,mi:true,lista:t.motivo!==MOTIVO_SUSP,prev:t.prev||'',iniIncerto:false,origem:'planilha'}); novos++;
-    }
-  });
-  logar('Planilha de Faltas',P.arquivo,`${n} atualizados · ${novos} novos · ${ext} datas de início corrigidas`);
-  fecharModal(); commit(); toast('Planilha importada.');
-};
-
-/* =====================================================================
-   IMPORTAÇÃO 4 (opcional) — "Indicador de Falta" (dias já fechados + denominadores)
-   ===================================================================== */
-async function iniciarIndicador(file){
-  const wb=lerWB(await file.arrayBuffer()); const ano=+((file.name.match(/20\d\d/)||[])[0]||S.ano);
-  const dias={}, dens={}, meses=[]; const H=hoje();
-  MESES.forEach((mes,mi)=>{
-    const sn=wb.SheetNames.find(n=>norm(n)===norm(mes)); if(!sn) return;
-    const ws=wb.Sheets[sn], rows=sheetRows(ws,12,45); if(!rows.length) return;
-    const hd=rows[0].map(norm); const c={dia:hd.findIndex(x=>x.startsWith('DIA')),md:hd.findIndex(x=>x.includes('ALMOX')),ee:hd.findIndex(x=>x.includes('ESTADUAL')),
-      ds:hd.findIndex(x=>x.includes('DISPENSA')),rf:hd.findIndex(x=>x.includes('RECOLH')),pc:hd.findIndex(x=>x.startsWith('PERCENTUAL'))};
-    if(c.dia<0||c.md<0||c.ee<0) return;
-    let n=0;
-    for(let r=1;r<rows.length;r++){
-      const d=rows[r][c.dia]; if(typeof d!=='number'||d<1||d>31) continue;
-      const g=k=>(c[k]>=0&&typeof rows[r][c[k]]==='number')?rows[r][c[k]]:null;
-      const v={md:g('md'),ee:g('ee'),ds:g('ds'),rf:g('rf')};
-      if(v.md===null&&v.ee===null&&v.ds===null&&v.rf===null) continue;
-      const iso=isoOf(ano,mi+1,d); if(!validISO(iso)||iso>H) continue;
-      dias[iso]={md:v.md||0,ee:v.ee||0,ds:v.ds||0,rf:v.rf||0}; n++;
-    }
-    let den=null;
-    if(c.pc>=0){ const cel=ws[XLSX.utils.encode_cell({r:1,c:c.pc})]; const m=cel&&cel.f&&String(cel.f).match(/\*\s*100\s*\)?\s*\/\s*(\d+(?:\.\d+)?)/); if(m) den=+m[1]; }
-    if(den) dens[mi+1]=den;
-    meses.push({mi,nome:mes,n,den});
-  });
-  if(!meses.length) throw new Error('Não encontrei abas de mês com as colunas do Indicador de Falta.');
-  PLAN={tipo:'ind',arquivo:file.name,ano,dias,dens,meses};
-  abrirModal(()=>{
-    const P=PLAN, total=Object.keys(P.dias).length, ja=Object.keys(S.indImp).length;
-    return {titulo:'Conferir Indicador de Falta antes de importar',
-      corpo:`<p class="muted small" style="margin-top:0">Arquivo: <b>${esc(P.arquivo)}</b> (ano ${P.ano}). Os dias abaixo passam a ser tratados como <b>dias fechados</b>: o Indicador exportado usa esses números exatamente como estão. Dias sem dados continuam calculados a partir das faltas do sistema.</p>
-        ${ja?`<div class="msg warn">Já existem ${ja} dias importados; os dias deste arquivo substituem os de mesma data.</div>`:''}
-        <div class="tbl-wrap"><table class="t"><thead><tr><th>Mês</th><th class="num">Dias com dados</th><th class="num">Denominador do %</th></tr></thead><tbody>
-        ${P.meses.map(m=>`<tr><td>${m.nome}</td><td class="num">${m.n}</td><td class="num">${m.den||'—'}</td></tr>`).join('')}</tbody></table></div>
-        <p class="muted small">${total} dias no total. O denominador é o valor usado na fórmula original do percentual (Nº em falta × 100 ÷ denominador).</p>`,
-      rodape:`<button class="btn ghost" data-act="fechar">Cancelar</button><button class="btn" data-act="indAplicar">Importar indicador</button>`};
-  });
-}
-ACT.indAplicar=()=>{
-  const P=PLAN; guardarAnterior(); Object.assign(S.indImp,P.dias); Object.assign(S.param.denom,P.dens);
-  logar('Indicador de Falta',P.arquivo,`${Object.keys(P.dias).length} dias · ${Object.keys(P.dens).length} denominadores`);
-  fecharModal(); commit(); toast('Indicador importado.');
+  logar('Lista diária (CSV)',P.arquivo,`substituiu a anterior · ${novos} ${plural(novos,'nova','novas')} · ${enc} ${plural(enc,'encerrada','encerradas')} · ${cont} continuam${rem?` · ${rem} da lista anterior removidas`:''}${criados?` · ${criados} cadastrados`:''}`);
+  fecharModal(); commit(); toast(`Lista aplicada (substitui a anterior): ${novos} novas, ${enc} encerradas, ${cont} continuam.`);
 };
 
 /* =====================================================================
@@ -859,12 +735,12 @@ function ativarAba(t){
 }
 $$('.tab-btn').forEach(b=>b.addEventListener('click',()=>ativarAba(b.dataset.tab)));
 ACT.irImport=()=>ativarAba('import');
-ACT.irExport=()=>{ ativarAba('rotina'); setTimeout(()=>{ const e=$('#rtExport'); if(e) e.scrollIntoView({behavior:'smooth',block:'end'}); },80); };
+ACT.irExport=()=>{ const e=$('#rtExport'); if(e) e.scrollIntoView({behavior:'smooth',block:'end'}); };
 function renderTab(t){ ({rotina:renderRotina,consulta:renderConsulta,import:renderImportacoes,param:renderParam})[t](); }
 function renderAll(){
   $('#chipHoje').textContent='Hoje: '+fmtBR(hoje())+(S.param.hoje?' (data manual)':'');
   $('#nFaltas').textContent=emFaltaHoje().length;
-  renderTab(ativa);
+  renderTab(ativa); desenharExportBar();
 }
 const optMot=(sel)=>MOTIVOS.map(m=>`<option ${m.nome===sel?'selected':''}>${esc(m.nome)}</option>`).join('');
 const vazioSemHist=()=>`<div class="card"><div class="empty"><b>Comece importando o histórico</b>Carregue o arquivo Med_em_falta_Consolidado em Importações. Depois disso, toda a rotina — lista do dia, ajustes e exportações — acontece na aba Rotina do dia.</div><div style="text-align:center"><button class="btn" data-act="irImport">Ir para Importações</button></div></div>`;
@@ -950,7 +826,7 @@ function htmlRegistrarFalta(){
 function htmlCSVCard(){
   const st=S.csv?`Última lista aplicada: <b>${fmtBR(S.csv.dataLista||S.csv.dataLanc)}</b> (em ${esc(S.csv.aplicadoEm)}).`:'Nenhuma lista do SIGAF aplicada ainda.';
   return `<div class="card"><h2>Atualizar com a lista do SIGAF</h2>
-    <p class="lead">Solte aqui o CSV do dia (medicamentoEmFalta). A conferência abre nesta mesma tela: você só escolhe o motivo dos itens novos e aplica.</p>
+    <p class="lead">Solte aqui o CSV do dia (medicamentoEmFalta). Ele substitui a lista anterior; a conferência abre nesta mesma tela e você só escolhe o motivo dos itens novos.</p>
     <div class="drop" data-what="csv"><span class="muted small">${st}</span><button class="btn" data-act="pick" data-what="csv">Escolher CSV do dia</button></div></div>`;
 }
 function renderRotina(){
@@ -968,8 +844,7 @@ function renderRotina(){
         </div>
       </div>
       <div id="faltasTabela"></div>
-    </div>
-    <div class="export-bar" id="rtExport"></div>`;
+    </div>`;
   $('#fSit').value=UI.sit; renderGrade(); atualizarResumo();
 }
 function atualizarResumo(){
@@ -986,17 +861,22 @@ function atualizarResumo(){
       <span class="st info"><b>${S.csv?fmtBR(S.csv.dataLista||S.csv.dataLanc):'—'}</b> última lista do SIGAF</span>
     </div>`;
   }
-  const x=$('#rtExport'); if(x) x.innerHTML=htmlExportBar();
+  desenharExportBar();
+}
+function desenharExportBar(){
+  const x=$('#rtExport'); if(!x) return;
+  const on=S.meds.length>0; x.classList.toggle('hidden',!on); x.innerHTML=on?htmlExportBar():'';
 }
 function htmlExportBar(){
   const R=PLAN_HOJE(), semMot=[...R.finalP,...R.finalS].filter(x=>!x.mi).length, ano=EXP_ANO||S.ano;
-  return `<div class="xb-group"><div class="xb-t"><b>Planilha de Faltas de hoje</b><span>${R.finalP.length} ${plural(R.finalP.length,'item','itens')} + ${R.finalS.length} ${plural(R.finalS.length,'suspenso')}${semMot?`, <button class="btn sm link" data-act="rtFiltro" data-sit="semmot">${semMot} com motivo a confirmar</button>`:''}</span></div>
-      <button class="btn sm" data-act="rtPlanXlsx">Baixar Excel</button><button class="btn sm ghost" data-act="rtPlanPdf">Baixar PDF</button></div>
-    <div class="xb-group"><div class="xb-t"><b>Consolidado e Indicador</b><span>ano <select data-chg="rtAno" aria-label="Ano da exportação">${optAnos(ano)}</select></span></div>
-      <button class="btn sm ghost" data-act="rtCons">Consolidado</button><button class="btn sm ghost" data-act="rtInd">Indicador</button>
+  return `<div class="xb-group"><div class="xb-t"><b>Lista diária — medicamentoEmFalta</b><span>Planilha de Faltas de hoje: ${R.finalP.length} ${plural(R.finalP.length,'item','itens')} + ${R.finalS.length} ${plural(R.finalS.length,'suspenso')}${semMot?`, <button class="btn sm link" data-act="rtFiltro" data-sit="semmot">${semMot} com motivo a confirmar</button>`:''}</span></div>
+      <button class="btn sm" data-act="rtPlanXlsx">Excel</button><button class="btn sm ghost" data-act="rtPlanPdf">PDF</button></div>
+    <div class="xb-group"><div class="xb-t"><b>Histórico e Indicador</b><span>ano <select data-chg="rtAno" aria-label="Ano da exportação">${optAnos(ano)}</select></span></div>
+      <button class="btn sm ghost" data-act="rtCons" title="Med_em_falta_Consolidado_${ano}.xlsx">Histórico — Med_em_falta_Consolidado</button>
+      <button class="btn sm ghost" data-act="rtInd" title="Indicador_de_Falta_${ano}.xlsx">Indicador de Falta</button>
       <button class="btn sm link" data-act="rtIndVer">ver indicador antes</button></div>`;
 }
-ACT.rtFiltro=b=>{ if(INL) return; UI.sit=b.dataset.sit; const f=$('#fSit'); if(f) f.value=UI.sit; renderGrade(); atualizarResumo(); const g=$('#rtGrade'); if(g) g.scrollIntoView({behavior:'smooth',block:'start'}); };
+ACT.rtFiltro=b=>{ if(INL) return; UI.sit=b.dataset.sit; if(ativa!=='rotina') ativarAba('rotina'); const f=$('#fSit'); if(f) f.value=UI.sit; renderGrade(); atualizarResumo(); const g=$('#rtGrade'); if(g) g.scrollIntoView({behavior:'smooth',block:'start'}); };
 CHG.fFiltro=()=>{ UI.sit=$('#fSit').value; UI.busca=$('#fBusca').value; renderGrade(); atualizarResumo(); };
 ACT.ord=b=>{ if(UI.ord===b.dataset.k) UI.dir*=-1; else { UI.ord=b.dataset.k; UI.dir=1; } renderGrade(); };
 function filtrarEps(){
@@ -1089,7 +969,7 @@ ACT.rtConfTodos=()=>{ const L=filtrarEps(); L.forEach(e=>e.mi=true); logar('Moti
 CHG.gLista=t=>{ const e=achaEp(t.dataset.id); if(!e) return; e.lista=t.checked; gravarLinha(e); };
 
 /* ---------- exportar direto da barra (a tabela acima já é a conferência) ---------- */
-CHG.rtAno=t=>{ EXP_ANO=+t.value; };
+CHG.rtAno=t=>{ EXP_ANO=+t.value; desenharExportBar(); };
 ACT.rtPlanXlsx=()=>executar('Gerando o Excel…',async()=>{
   const R=PLAN_HOJE(), buf=await gerarPlanilhaXlsx(R.finalP,R.finalS); baixar(buf,nomePlan()+'.xlsx',MIME_XLSX);
   logar('Exportação',nomePlan()+'.xlsx',`${R.finalP.length} itens + ${R.finalS.length} suspensos`); salvar(); toast('Excel gerado.');
@@ -1202,12 +1082,7 @@ function htmlImportacoes(){
   return `<div class="msg info" style="margin-top:0">A lista diária do SIGAF também pode ser solta direto na <b>Rotina do dia</b> — é lá que a conferência aparece.</div>
   <div class="grid2">
     ${cardImport('1. Histórico — Med_em_falta_Consolidado','Arquivo Excel com uma aba por mês e o Consolidado. Cada medicamento é lido dia a dia e vira períodos de falta que você pode editar depois. Substitui os dados atuais.','hist',stH,'Escolher histórico (.xlsx)')}
-    ${cardImport('2. Lista diária — medicamentoEmFalta (.csv)','Lista do SIGAF. Só os itens “Totalmente desabastecido” entram na planilha diária. Antes de aplicar, você confere quem entra, quem sai e escolhe o motivo dos novos.','csv',stC,'Escolher CSV do dia')}
-  </div>
-  <h2 class="sec-title">Complementos (opcionais)</h2>
-  <div class="grid2">
-    ${cardImport('Planilha de Faltas anterior','Traz o dia real de entrada em falta e o motivo de cada item. Útil para corrigir faltas que começaram antes de 01/01 (o histórico só mostra a partir do primeiro dia da planilha).','plan',null,'Escolher planilha (.xlsm/.xlsx)')}
-    ${cardImport('Indicador de Falta','Traz os números diários já fechados por motivo (Almox × Estoque Estadual) e o denominador do percentual de cada mês. Sem ele, o Indicador é calculado só a partir dos registros do sistema.','ind',null,'Escolher indicador (.xlsx)')}
+    ${cardImport('2. Lista diária — medicamentoEmFalta (.csv)','Lista do SIGAF. Cada importação substitui a anterior: só os itens “Totalmente desabastecido” do arquivo mais recente ficam em falta. Antes de aplicar, você confere quem entra, quem sai e escolhe o motivo dos novos.','csv',stC,'Escolher CSV do dia')}
   </div>
   <div class="card"><h2>Registro de atividades</h2>
     ${S.log.length?S.log.slice(0,15).map(l=>`<div class="logline"><time>${esc(l.ts)}</time><div><b>${esc(l.tipo)}</b>${l.arquivo?` — ${esc(l.arquivo)}`:''}<div class="muted small">${esc(l.resumo)}</div></div></div>`).join(''):'<p class="muted">Nada registrado ainda.</p>'}
@@ -1404,35 +1279,70 @@ async function gerarPlanilhaXlsx(P,Sp){
   ws.addConditionalFormatting({ref:`F1:F${Math.max(r-1,4)}`,rules:[{type:'containsText',operator:'containsText',text:'Sem Estoque Estadual',formulae:[`NOT(ISERROR(SEARCH("Sem Estoque Estadual",F1)))`],style:{fill:{type:'pattern',pattern:'solid',bgColor:{argb:ROSA}}}}]});
   return wb.xlsx.writeBuffer();
 }
-function gerarPlanilhaPDF(P,Sp){
-  const {jsPDF}=window.jspdf, doc=new jsPDF({unit:'mm',format:'a4',orientation:'portrait'}), H=hoje();
-  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(49,133,156); doc.text('Planilha de Faltas de Medicamentos',14,16);
-  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,99,80);
-  doc.text(`Atualização: ${dataHoraArq()}   |   Referência: ${fmtBR(H)}   |   ${P.length} ${plural(P.length,'medicamento em falta','medicamentos em falta')}`,14,22);
+/* Desenha a planilha num doc com a fonte fs. Retorna o doc (pode ter mais de 1 página). */
+function desenharPlanilhaPDF(P,Sp,fs,ori){
+  const {jsPDF}=window.jspdf, doc=new jsPDF({unit:'mm',format:'a4',orientation:ori}), H=hoje();
+  const W=doc.internal.pageSize.getWidth(), Hpg=doc.internal.pageSize.getHeight(), mg=8;
+  const tit=Math.min(18,Math.max(11,fs+4)), sub=Math.min(11,Math.max(7,fs));
+  doc.setFont('helvetica','bold'); doc.setFontSize(tit); doc.setTextColor(49,133,156); doc.text('Planilha de Faltas de Medicamentos',mg,mg+tit*0.35);
+  let y=mg+tit*0.35+sub*0.45;
+  doc.setFont('helvetica','normal'); doc.setFontSize(sub); doc.setTextColor(90,99,80);
+  doc.text(`Atualização: ${dataHoraArq()}   |   Referência: ${fmtBR(H)}   |   ${P.length} ${plural(P.length,'medicamento em falta','medicamentos em falta')}${Sp.length?` + ${Sp.length} ${plural(Sp.length,'suspenso')}`:''}`,mg,y);
+  y+=sub*0.3;
   const corpo=l=>l.map(x=>[x.nome,fmtBR(x.ini),fmtBR(H),String(x.dias),txtPrev(x.prev),x.motivo]);
-  // mesma escala de cor do Excel (entrada mais antiga = mais vermelha) para a coluna "Dia entrada em falta"
-  const escala=l=>{ const ds=l.map(x=>dnum(x.ini)); const mn=Math.min(...ds), mx=Math.max(...ds)||mn+1;
+  const escala=l=>{ const ds=l.map(x=>dnum(x.ini)); const mn=Math.min(...ds), mx=Math.max(...ds);
     return x=>{ const t=mx>mn?(dnum(x.ini)-mn)/(mx-mn):1, c1=[248,105,107], c2=[252,252,255];
       return c1.map((v,i)=>Math.round(v+(c2[i]-v)*t)); }; };
-  const estilo=(cor)=>({startY:0,theme:'grid',margin:{left:14,right:14,top:16,bottom:16},styles:{font:'helvetica',fontSize:8,cellPadding:1.7,lineColor:[190,190,190],lineWidth:.15,textColor:[30,30,30],overflow:'linebreak',valign:'middle'},
-    headStyles:{fillColor:cor,textColor:[20,45,55],halign:'center',fontStyle:'normal',fontSize:7.5},
-    columnStyles:{0:{cellWidth:'auto',halign:'left'},1:{cellWidth:22,halign:'center'},2:{cellWidth:20,halign:'center'},3:{cellWidth:15,halign:'center'},4:{cellWidth:23,halign:'center'},5:{cellWidth:38,halign:'center'}},
-    didParseCell:d=>{ if(d.section==='body'&&d.column.index===5&&d.cell.raw===MOTIVOS[1].nome) d.cell.styles.fillColor=[255,199,206]; if(d.section==='body'&&d.column.index===3) d.cell.styles.fontStyle='bold'; }});
-  const cabec=['Medicamento em falta','Dia entrada em falta','Hoje','Dias em falta','Previsão chegada','Motivo'];
-  const corP=escala(P.length?P:[{ini:H}]);
-  doc.autoTable({...estilo([183,222,232]),startY:27,head:[cabec],body:P.length?corpo(P):[[{content:'Nenhum medicamento em falta na lista.',colSpan:6,styles:{halign:'center',textColor:[90,99,80]}}]],
-    didParseCell:d=>{ if(d.section==='body'&&d.column.index===1&&P[d.row.index]) d.cell.styles.fillColor=corP(P[d.row.index]); if(d.section==='body'&&d.column.index===5&&d.cell.raw===MOTIVOS[1].nome) d.cell.styles.fillColor=[255,199,206]; if(d.section==='body'&&d.column.index===3) d.cell.styles.fontStyle='bold'; }});
-  if(Sp.length){
-    let y=doc.lastAutoTable.finalY+9; if(y>255){ doc.addPage(); y=20; }
-    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(120,150,70); doc.text('Medicamento suspenso temporário',14,y-2);
-    const corS=escala(Sp);
-    doc.autoTable({...estilo([215,228,189]),startY:y,head:[cabec],body:corpo(Sp),
-      didParseCell:d=>{ if(d.section==='body'&&d.column.index===1&&Sp[d.row.index]) d.cell.styles.fillColor=corS(Sp[d.row.index]); if(d.section==='body'&&d.column.index===5&&d.cell.raw===MOTIVOS[1].nome) d.cell.styles.fillColor=[255,199,206]; if(d.section==='body'&&d.column.index===3) d.cell.styles.fontStyle='bold'; }});
+  const pad=Math.max(.5,fs*.14);
+  const base=(cor,L,cor1)=>({theme:'grid',margin:{left:mg,right:mg,top:mg,bottom:mg+4},rowPageBreak:'avoid',
+    styles:{font:'helvetica',fontSize:fs,cellPadding:pad,lineColor:[170,170,170],lineWidth:.15,textColor:[20,20,20],overflow:'linebreak',valign:'middle',halign:'center'},
+    headStyles:{fillColor:cor,textColor:[20,45,55],halign:'center',fontStyle:'bold',fontSize:Math.max(fs*.85,4)},
+    columnStyles:{0:{cellWidth:larg[0],halign:'left'},1:{cellWidth:larg[1]},2:{cellWidth:larg[2]},3:{cellWidth:larg[3]},4:{cellWidth:larg[4]},5:{cellWidth:larg[5]}},
+    didParseCell:d=>{ if(d.section!=='body') return;
+      if(d.column.index===1&&L[d.row.index]) d.cell.styles.fillColor=cor1(L[d.row.index]);
+      if(d.column.index===5&&d.cell.raw===MOTIVOS[1].nome) d.cell.styles.fillColor=[255,199,206];
+      if(d.column.index===3) d.cell.styles.fontStyle='bold'; }});
+  const cabec=['Medicamento em falta','Entrada em falta','Hoje','Dias em falta','Previsão chegada','Motivo'];
+  /* Larguras fixas e iguais nas duas tabelas, medidas no tamanho de fonte atual:
+     nenhuma palavra é quebrada no meio; o nome do medicamento fica com o espaço que sobra. */
+  const util=W-2*mg, hfs=Math.max(fs*.85,4), todas=[...P,...Sp], linhas=corpo(todas);
+  const mede=(txt,tam,bold)=>{ doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(tam); return doc.getTextWidth(String(txt)); };
+  const maiorPalavra=(txt,tam,bold)=>Math.max(0,...String(txt).split(/\s+/).map(p=>mede(p,tam,bold)));
+  const larg=[0];
+  for(let c=1;c<=5;c++){
+    const corpoW=Math.max(0,...linhas.map(l=>mede(l[c],fs,c===3)));
+    const cabW=c===5?mede(cabec[c],hfs,true):maiorPalavra(cabec[c],hfs,true);
+    larg[c]=Math.max(corpoW,cabW)+2*pad+0.6;
   }
+  larg[0]=util-larg.slice(1).reduce((a,b)=>a+b,0);
+  const minNome=Math.max(maiorPalavra(cabec[0],hfs,true),...todas.map(x=>maiorPalavra(x.nome,fs,false)))+2*pad+0.6;
+  let cabeLargura=larg[0]>=Math.max(minNome,util*0.28);
+  if(!cabeLargura) larg[0]=Math.max(larg[0],10);
+  doc.autoTable({...base([183,222,232],P,escala(P.length?P:[{ini:H}])),startY:y+1,head:[cabec],
+    body:P.length?corpo(P):[[{content:'Nenhum medicamento em falta na lista.',colSpan:6,styles:{halign:'center',textColor:[90,99,80]}}]]});
+  if(Sp.length){
+    let y2=doc.lastAutoTable.finalY+sub*0.55;
+    doc.setFont('helvetica','bold'); doc.setFontSize(sub); doc.setTextColor(110,140,60); doc.text('Medicamento suspenso temporário',mg,y2);
+    doc.autoTable({...base([215,228,189],Sp,escala(Sp)),startY:y2+1,head:[cabec],body:corpo(Sp)});
+  }
+  doc.__cabe=cabeLargura;
   const n=doc.internal.getNumberOfPages();
-  for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,128,110);
-    doc.text(`Página ${i} de ${n}`,196,290,{align:'right'}); doc.text('Controle de faltas de medicamentos',14,290); }
-  return doc.output('blob');
+  for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(120,128,110);
+    doc.text(n>1?`Página ${i} de ${n}`:'',W-mg,Hpg-4,{align:'right'}); doc.text('Controle de faltas de medicamentos',mg,Hpg-4); }
+  return doc;
+}
+/* Procura a MAIOR fonte em que tudo cabe em UMA página (retrato ou paisagem, o que der fonte maior). */
+function gerarPlanilhaPDF(P,Sp){
+  const cabe=(fs,ori)=>{ const d=desenharPlanilhaPDF(P,Sp,fs,ori); return d.__cabe && d.internal.getNumberOfPages()===1; };
+  let melhor={fs:0,ori:'portrait'}; const aviso=console.warn; console.warn=()=>{};   // silencia avisos da busca
+  try{
+  ['portrait','landscape'].forEach(ori=>{
+    let lo=2, hi=22; if(!cabe(lo,ori)) return;
+    while(hi-lo>0.1){ const m=(lo+hi)/2; if(cabe(m,ori)) lo=m; else hi=m; }
+    if(lo>melhor.fs+0.05) melhor={fs:lo,ori};
+  }); } finally { console.warn=aviso; }
+  if(!melhor.fs) melhor={fs:2,ori:'landscape'};   // lista enorme: menor fonte possível
+  return desenharPlanilhaPDF(P,Sp,Math.floor(melhor.fs*10)/10,melhor.ori).output('blob');
 }
 
 /* ---------------------------------------------------------------------
@@ -1460,13 +1370,13 @@ function renderExpInd(){
   const P=PLAN, R=resumoIndicador(P.ano), M=R[P.mes], I=M.I;
   return {titulo:'Conferir o Indicador de Falta',
     corpo:`<div class="row" style="margin-bottom:10px"><div class="field" style="max-width:120px"><label for="xAno">Ano</label><select id="xAno" data-chg="expAno">${optAnos(P.ano)}</select></div>
-      <div class="muted small" style="flex:1;min-width:240px">Nº em falta = Almox (motivos diversos) + Estoque Estadual. % = Nº × 100 ÷ denominador do mês (ajustável em Parametrização).</div></div>
-    <div class="tbl-wrap" style="max-height:230px"><table class="t"><thead><tr><th>Mês</th><th class="num">Dias com dados</th><th class="num">Dias fechados (importados)</th><th class="num">Denominador</th><th class="num">% médio</th><th class="num">% máximo</th></tr></thead><tbody>
-    ${R.map(m=>`<tr class="${m.mi===P.mes?'sel':''}"><td><button class="btn sm link" data-act="indVer" data-mi="${m.mi}">${m.nome}</button></td><td class="num">${m.dias||'—'}</td><td class="num">${m.imp||'—'}</td><td class="num">${m.denom}${m.denOrigem==='herdado'?` <span class="badge b-gray" title="Repete o valor de ${MESES_ABR[m.denDe-1]}">= ${MESES_ABR[m.denDe-1]}</span>`:m.denOrigem==='padrao'?' <span class="badge b-gray">padrão</span>':''}</td><td class="num">${f2(m.med)}</td><td class="num">${f2(m.max)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="muted small" style="flex:1;min-width:240px">Nº em falta = Almox (motivos diversos) + Estoque Estadual. % = Nº × 100 ÷ denominador do mês (ajustável em Parametrização). Tudo calculado a partir das faltas registradas.</div></div>
+    <div class="tbl-wrap" style="max-height:230px"><table class="t"><thead><tr><th>Mês</th><th class="num">Dias com dados</th><th class="num">Denominador</th><th class="num">% médio</th><th class="num">% máximo</th></tr></thead><tbody>
+    ${R.map(m=>`<tr class="${m.mi===P.mes?'sel':''}"><td><button class="btn sm link" data-act="indVer" data-mi="${m.mi}">${m.nome}</button></td><td class="num">${m.dias||'—'}</td><td class="num">${m.denom}${m.denOrigem==='herdado'?` <span class="badge b-gray" title="Repete o valor de ${MESES_ABR[m.denDe-1]}">= ${MESES_ABR[m.denDe-1]}</span>`:m.denOrigem==='padrao'?' <span class="badge b-gray">padrão</span>':''}</td><td class="num">${f2(m.med)}</td><td class="num">${f2(m.max)}</td></tr>`).join('')}</tbody></table></div>
     <h3>${MESES[P.mes]} de ${P.ano} — dia a dia</h3>
     ${M.dias?svgBarrasPct(I.rows):'<p class="muted small">Este mês ainda não tem dias com dados.</p>'}
-    <div class="tbl-wrap" style="max-height:260px;margin-top:8px"><table class="t"><thead><tr><th class="num">Dia</th><th class="num">Almox (motivos diversos)</th><th class="num">Estoque Estadual</th><th class="num">Disp. suspensa</th><th class="num">Recolhimento</th><th class="num">Nº em falta</th><th class="num">%</th><th>Origem</th></tr></thead><tbody>
-    ${I.rows.map(r=>r.vazio?`<tr class="off"><td class="num">${r.dia}</td><td colspan="7" class="muted">sem dados (data futura)</td></tr>`:`<tr><td class="num">${r.dia}</td><td class="num">${r.md||''}</td><td class="num">${r.ee||''}</td><td class="num">${r.ds||''}</td><td class="num">${r.rf||''}</td><td class="num"><b>${r.n}</b></td><td class="num">${f2(r.pct)}</td><td>${r.origem==='importado'?'<span class="badge b-blue">fechado</span>':'<span class="badge b-gray">calculado</span>'}</td></tr>`).join('')}</tbody></table></div>`,
+    <div class="tbl-wrap" style="max-height:260px;margin-top:8px"><table class="t"><thead><tr><th class="num">Dia</th><th class="num">Almox (motivos diversos)</th><th class="num">Estoque Estadual</th><th class="num">Disp. suspensa</th><th class="num">Recolhimento</th><th class="num">Nº em falta</th><th class="num">%</th></tr></thead><tbody>
+    ${I.rows.map(r=>r.vazio?`<tr class="off"><td class="num">${r.dia}</td><td colspan="6" class="muted">sem dados (data futura)</td></tr>`:`<tr><td class="num">${r.dia}</td><td class="num">${r.md||''}</td><td class="num">${r.ee||''}</td><td class="num">${r.ds||''}</td><td class="num">${r.rf||''}</td><td class="num"><b>${r.n}</b></td><td class="num">${f2(r.pct)}</td></tr>`).join('')}</tbody></table></div>`,
     rodape:`<span class="spacer">Arquivo: Indicador_de_Falta_${P.ano}.xlsx (12 abas, com gráficos)</span><button class="btn ghost" data-act="fechar">Fechar</button><button class="btn" data-act="expIndOk">Baixar Excel</button>`};
 }
 ACT.indVer=b=>{ PLAN.mes=+b.dataset.mi; desenharModal(true); };
@@ -1486,13 +1396,15 @@ async function gerarIndicador(ano){
     [8.5,17,14,17,14,17.5,15.5].forEach((w,i)=>ws.getColumn(i+1).width=w);
     const h=ws.getRow(1); h.height=60;
     ['Dia Mês',...MOTIVOS.map(m=>m.cab),'Nº Medicamentos em Falta','Percentual de Falta'].forEach((t,i)=>{
-      const c=h.getCell(i+1); c.value=t; c.alignment={horizontal:'center',vertical:'center',wrapText:true}; c.border=sep; });
+      const c=h.getCell(i+1); c.value=t; c.alignment={horizontal:'center',vertical:'middle',wrapText:true}; c.border=sep; });
     h.getCell(1).font={bold:false};
     rows.forEach((r,i)=>{
       const row=ws.getRow(i+2); row.getCell(1).value=r.dia; row.getCell(1).font={bold:true}; row.getCell(1).alignment={horizontal:'center'};
       if(!r.vazio){ ['md','ee','ds','rf'].forEach((k,j)=>{ if(r[k]||j<2) row.getCell(j+2).value=r[k]||0; }); }
-      row.getCell(6).value={formula:`SUM(B${i+2}:C${i+2})`,result:r.vazio?0:r.n};
-      row.getCell(7).value={formula:`F${i+2}*100/${denom}`,result:r.vazio?0:r.pct}; row.getCell(7).numFmt='0.00';
+      if(!r.vazio){   // dias futuros ficam em branco (o gráfico mostra lacuna, não zero)
+        row.getCell(6).value={formula:`SUM(B${i+2}:C${i+2})`,result:r.n};
+        row.getCell(7).value={formula:`F${i+2}*100/${denom}`,result:r.pct}; }
+      row.getCell(7).numFmt='0.00';
       for(let c=1;c<=7;c++){ row.getCell(c).alignment={horizontal:'center'}; row.getCell(c).border=sep; }
     });
     info.push({mes,nd});
@@ -1564,12 +1476,12 @@ function renderParam(){
       <div class="row"><div class="field" style="max-width:180px"><label for="pmTol">Tolerância (dias)</label><input type="number" id="pmTol" min="0" step="1" value="${+S.param.tolerancia||0}" data-chg="pmTol"></div>
       <span class="muted small" style="flex:1;min-width:220px;padding-bottom:9px">Padrão de 180 dias (prazo que o paciente tem mesmo sem falta do medicamento). Ajuste se a sua unidade usa outro prazo; com 0, o atraso precisa estar totalmente coberto pelos dias em falta.</span></div></div>
     <div class="card"><h2>Data de referência</h2>
-      <p class="lead">Normalmente o sistema usa a data do computador como “hoje”. Informe uma data só para lançar ou conferir um dia passado.</p>
-      <div class="row"><div class="field" style="max-width:190px"><label for="pmHoje">Data de “hoje” manual</label><input type="date" id="pmHoje" value="${esc(S.param.hoje||'')}" data-chg="pmHoje"></div>
-      ${S.param.hoje?'<button class="btn ghost" data-act="pmHojeLimpar">Voltar à data do computador</button>':''}</div></div>
+      <p class="lead">É sempre a data de hoje. Altere só se precisar lançar ou conferir outro dia — a alteração vale até você voltar para hoje ou recarregar a página.</p>
+      <div class="row"><div class="field" style="max-width:190px"><label for="pmHoje">Data de referência</label><input type="date" id="pmHoje" value="${hoje()}" data-chg="pmHoje"></div>
+      ${S.param.hoje?'<button class="btn ghost" data-act="pmHojeLimpar">Voltar para hoje</button>':'<span class="muted small" style="padding-bottom:9px">Usando a data de hoje.</span>'}</div></div>
   </div>
   <div class="card"><h2>Denominador do indicador, por mês</h2>
-    <p class="lead">Percentual de falta = nº de medicamentos em falta × 100 ÷ denominador (total de itens monitorados no mês). É automático: preencha só o mês em que o valor muda — os meses seguintes repetem esse número sozinhos, até você informar outra mudança. Sem nenhum valor informado, usa ${DENOM_PADRAO}. Importar o Indicador de Falta preenche estes campos a partir do arquivo.</p>
+    <p class="lead">Percentual de falta = nº de medicamentos em falta × 100 ÷ denominador (total de itens monitorados no mês). É automático: preencha só o mês em que o valor muda — os meses seguintes repetem esse número sozinhos, até você informar outra mudança. Sem nenhum valor informado, usa ${DENOM_PADRAO}.</p>
     <div class="row">${dens}</div>
     <div class="row" style="margin-top:12px"><div class="field" style="max-width:150px"><label for="pmDenTodos">Novo valor a partir de</label><input type="number" id="pmDenTodos" min="1" step="1" placeholder="ex.: 235"></div>
       <div class="field" style="max-width:150px"><label for="pmDenMes">Mês</label><select id="pmDenMes">${MESES.map((m,i)=>`<option value="${i+1}">${m}</option>`).join('')}</select></div>
@@ -1577,7 +1489,7 @@ function renderParam(){
   <div class="card" id="pmCadCard">
     <div class="card-head"><div class="card-head-main">
       <div><div class="eyebrow">Cadastro único</div><h2>Medicamentos: cadastro e histórico</h2>
-      <p class="desc">Todo medicamento que passa pelo sistema — histórico, CSV diário, planilha ou registro manual — fica reunido aqui. Itens que o sistema criou sozinho durante uma importação, por não reconhecer o nome, ficam com o selo <b>🆕 Novo — revisar</b>; confira se não é o mesmo medicamento com um nome diferente (nesse caso, use “Unir a outro”) antes de seguir usando. Nome e outros nomes já ficam abertos para edição: altere e saia do campo que grava sozinho. Renomear, unir duplicados ou excluir muda também as faltas já registradas para aquele item.</p></div>
+      <p class="desc">Todo medicamento que passa pelo sistema — histórico, CSV diário, planilha ou registro manual — fica reunido aqui. Itens que o sistema criou sozinho durante uma importação, por não reconhecer o nome, ficam com o selo <b>🆕 Novo — revisar</b>; confira se não é o mesmo medicamento com um nome diferente (nesse caso, use “Unir a outro”) antes de seguir usando. Abaixo de cada item aparece o medicamento mais parecido do cadastro, com atalhos para usá-lo como outro nome ou unir os dois. Nome e outros nomes já ficam abertos para edição: altere e saia do campo que grava sozinho. Renomear, unir duplicados ou excluir muda também as faltas já registradas para aquele item.</p></div>
     </div></div>
     <div class="card-body" style="padding-top:0">
       <div class="search-bar">
@@ -1602,7 +1514,7 @@ function renderParam(){
       <div class="field-lg" style="margin:14px 0 12px;font-size:12px;color:var(--ink-soft);display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <span id="pmCount"></span>
         <span>·</span><button class="btn sm link" data-act="irImport">Importar em lote</button>
-        <span>·</span><button class="btn sm link" data-act="irExport">Exportar (Rotina do dia)</button>
+        <span>·</span><button class="btn sm link" data-act="irExport">Exportar (barra no rodapé)</button>
         <span class="view-toggle" style="margin-left:auto">
           <button type="button" class="view-toggle-btn${PM.view==='table'?' active-view':''}" data-act="pmView" data-v="table" title="Tabela — melhor em telas largas">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg> Tabela
@@ -1634,7 +1546,8 @@ document.addEventListener('keydown',e=>{
   e.preventDefault(); const i=$('#pmBusca'); if(i){ i.focus(); i.select(); }
 });
 CHG.pmTol=t=>{ S.param.tolerancia=Math.max(0,Math.floor(+t.value||0)); salvar(); toast('Tolerância salva.'); };
-CHG.pmHoje=t=>{ if(t.value&&!validISO(t.value)) return; S.param.hoje=t.value||''; commit(); toast(t.value?'Data manual definida.':'Usando a data do computador.'); };
+CHG.pmHoje=t=>{ if(t.value&&!validISO(t.value)) return; const H=(()=>{const d=new Date();return isoOf(d.getFullYear(),d.getMonth()+1,d.getDate());})();
+  S.param.hoje=(t.value&&t.value!==H)?t.value:''; commit(); toast(S.param.hoje?'Data de referência alterada.':'Usando a data de hoje.'); };
 ACT.pmHojeLimpar=()=>{ S.param.hoje=''; commit(); };
 CHG.pmDen=t=>{ const v=Math.floor(+t.value); if(v>0) S.param.denom[t.dataset.m]=v; else delete S.param.denom[t.dataset.m]; commit(); toast('Denominador salvo.'); };
 ACT.pmDenTodos=()=>{
@@ -1672,9 +1585,18 @@ function medBadge(m){
 }
 /* nome e sinônimos editáveis direto na linha — grava ao sair do campo */
 function camposMed(m){
+  const p=parecidosCom(m,1)[0];
+  const sug=p?`<span class="alias">Mais parecido no cadastro: <b>${esc(p.med.nome)}</b> (${Math.round(p.score*100)}%)
+      <button class="btn sm link" data-act="medAddAlias" data-id="${m.id}" data-alvo="${p.med.id}" title="Acrescenta este nome em “outros nomes”">usar como outro nome</button>
+      <button class="btn sm link" data-act="medUnir" data-id="${m.id}">unir a este</button></span>`:'';
   return `<input type="text" class="inl" value="${esc(m.nome)}" data-blur="medNome" data-id="${m.id}" aria-label="Nome do medicamento">
-    <input type="text" class="inl al" value="${esc((m.alias||[]).join('; '))}" data-blur="medAlias" data-id="${m.id}" placeholder="Outros nomes reconhecidos (separe com ;)" aria-label="Outros nomes reconhecidos">${medBadge(m)}`;
+    <input type="text" class="inl al" value="${esc((m.alias||[]).join('; '))}" data-blur="medAlias" data-id="${m.id}" placeholder="${p?'Sugestão: '+esc(p.med.nome):'Outros nomes reconhecidos (separe com ;)'}" aria-label="Outros nomes reconhecidos">${sug}${medBadge(m)}`;
 }
+ACT.medAddAlias=b=>{
+  const m=S.meds.find(x=>x.id===b.dataset.id), a=S.meds.find(x=>x.id===b.dataset.alvo); if(!m||!a) return;
+  abrirModal(()=>({titulo:'Usar como outro nome',narrow:true,corpo:`<p style="margin-top:0">“${esc(a.nome)}” já é um medicamento do cadastro${(IDX.eps.get(a.id)||[]).length?' e tem faltas registradas':''}. Para que esse nome passe a ser reconhecido como <b>${esc(m.nome)}</b>, os dois precisam ser unidos: as faltas de “${esc(a.nome)}” passam para <b>${esc(m.nome)}</b> e o nome vira “outro nome”.</p>`,
+    rodape:`<button class="btn ghost" data-act="fechar">Cancelar</button><button class="btn" data-act="medUnirDireto" data-de="${a.id}" data-para="${m.id}">Unir e usar como outro nome</button>`}));
+};
 function tirarBadge(t){ const w=t.closest('td,.med-card'); const b=w&&w.querySelector('.medb'); if(b) b.remove(); }
 BLUR.medNome=t=>{
   const m=S.meds.find(x=>x.id===t.dataset.id); if(!m) return;
@@ -1738,20 +1660,33 @@ ACT.pmBulkExcluirOk=()=>{
 };
 function nomeLivre(nome,ignorarId){ const k=norm(nome); const id=IDX.key.get(k); return !id||id===ignorarId; }
 ACT.medUnir=b=>{
-  const m=S.meds.find(x=>x.id===b.dataset.id); let erro='', alvo='';
+  const m=S.meds.find(x=>x.id===b.dataset.id), par=parecidosCom(m,5,0.01); let erro='', alvo=(par[0]&&par[0].score>=0.5)?par[0].med.id:'';
+  const idsPar=new Set(par.map(p=>p.med.id));
   abrirModal(()=>({titulo:'Unir a outro medicamento',narrow:true,corpo:`<p style="margin-top:0"><b>${esc(m.nome)}</b> será incorporado ao medicamento escolhido: as faltas passam para ele e o nome atual vira nome alternativo.</p>${erro?`<div class="msg err">${erro}</div>`:''}
-    <div class="field"><label for="uAlvo">Manter este medicamento</label><select id="uAlvo"><option value="">Selecione…</option>${[...S.meds].filter(x=>x.id!==m.id).sort(cmpNome).map(x=>`<option value="${x.id}" ${alvo===x.id?'selected':''}>${esc(x.nome)}</option>`).join('')}</select></div>`,
+    <div class="field"><label for="uAlvo">Manter este medicamento</label><select id="uAlvo"><option value="">Selecione…</option>
+      ${par.length?`<optgroup label="Mais parecidos">${par.map(p=>`<option value="${p.med.id}" ${alvo===p.med.id?'selected':''}>${Math.round(p.score*100)}% — ${esc(p.med.nome)}</option>`).join('')}</optgroup>`:''}
+      <optgroup label="Todos os medicamentos">${[...S.meds].filter(x=>x.id!==m.id&&!idsPar.has(x.id)).sort(cmpNome).map(x=>`<option value="${x.id}" ${alvo===x.id?'selected':''}>${esc(x.nome)}</option>`).join('')}</optgroup></select></div>
+    ${alvo?'<p class="muted small">Já vem selecionado o mais parecido — confira antes de unir.</p>':''}`,
     rodape:`<button class="btn ghost" data-act="fechar">Cancelar</button><button class="btn" data-act="medUnirOk" data-id="${m.id}">Unir</button>`}));
   PLAN={edit:true,desenha:x=>{ erro=x; alvo=$('#uAlvo').value; desenharModal(true); }};
 };
-ACT.medUnirOk=b=>{
-  const m=S.meds.find(x=>x.id===b.dataset.id), alvoId=$('#uAlvo').value; if(!alvoId) return PLAN.desenha('Escolha o medicamento que será mantido.');
-  const alvo=S.meds.find(x=>x.id===alvoId);
+function unirMeds(deId,paraId){   // devolve mensagem de erro ou ''
+  const m=S.meds.find(x=>x.id===deId), alvo=S.meds.find(x=>x.id===paraId); if(!m||!alvo) return 'Medicamento não encontrado.';
   const eps=S.eps.filter(e=>e.med===m.id);
-  for(const e of eps){ const cf=sobrepoe(alvoId,e.ini,e.fim); if(cf) return PLAN.desenha(`Os dois têm falta no mesmo período (${fmtBR(e.ini)} a ${e.fim?fmtBR(e.fim):'em aberto'} e ${fmtBR(cf.ini)} a ${cf.fim?fmtBR(cf.fim):'em aberto'}). Ajuste as datas na Rotina do dia antes de unir.`); }
-  eps.forEach(e=>e.med=alvoId);
+  for(const e of eps){ const cf=sobrepoe(paraId,e.ini,e.fim); if(cf) return `Os dois têm falta no mesmo período (${fmtBR(e.ini)} a ${e.fim?fmtBR(e.fim):'em aberto'} e ${fmtBR(cf.ini)} a ${cf.fim?fmtBR(cf.fim):'em aberto'}). Ajuste as datas na Rotina do dia antes de unir.`; }
+  eps.forEach(e=>e.med=paraId);
   alvo.alias=[...new Set([...(alvo.alias||[]),m.nome,...(m.alias||[])])].filter(a=>norm(a)!==norm(alvo.nome));
-  S.meds.splice(S.meds.indexOf(m),1); logar('Cadastro',alvo.nome,`unido com “${m.nome}”`); fecharModal(); commit(); toast('Medicamentos unidos.');
+  S.meds.splice(S.meds.indexOf(m),1); PMSEL.delete(m.id); logar('Cadastro',alvo.nome,`unido com “${m.nome}”`); return '';
+}
+ACT.medUnirOk=b=>{
+  const alvoId=$('#uAlvo').value; if(!alvoId) return PLAN.desenha('Escolha o medicamento que será mantido.');
+  const err=unirMeds(b.dataset.id,alvoId); if(err) return PLAN.desenha(err);
+  fecharModal(); commit(); toast('Medicamentos unidos.');
+};
+ACT.medUnirDireto=b=>{
+  const err=unirMeds(b.dataset.de,b.dataset.para);
+  if(err){ fecharModal(); return modalMsg('Não foi possível unir',`<p>${err}</p>`); }
+  fecharModal(); commit(); toast('Nome acrescentado em “outros nomes”.');
 };
 ACT.medExcluir=b=>{
   const m=S.meds.find(x=>x.id===b.dataset.id), n=S.eps.filter(e=>e.med===m.id).length;
