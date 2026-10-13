@@ -450,7 +450,7 @@ function fecharModal(){
   if(INL){ MODAL={render:INL.render,inline:true}; PLAN=INL.plan; }
 }
 let toastT=null;
-function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('on'),3800); }
+function toast(msg,ms){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('on'),ms||3800); }
 function modalMsg(titulo,html,extraRodape){
   abrirModal(()=>({titulo,narrow:true,corpo:html,rodape:(extraRodape||'')+`<button class="btn" data-act="fechar">OK</button>`}));
 }
@@ -624,7 +624,7 @@ async function iniciarCSV(file){
   if(!S.meds.length){ return modalMsg('Importe o histórico primeiro','<p>Ainda não há medicamentos cadastrados. Comece pela importação do <b>Med_em_falta_Consolidado</b>.</p>'); }
   const totais=[], visto=new Set();
   csv.itens.forEach(i=>{ if(norm(i.status)==='TOTALMENTE DESABASTECIDO' && !visto.has(i.k)){ visto.add(i.k); totais.push(i); } });
-  PLAN={tipo:'csv',arquivo:file.name,csv,totais,dataLanc:hoje(),escolha:{},incluir:{},motivo:{}};
+  PLAN={tipo:'csv',arquivo:file.name,csv,totais,dataLanc:hoje(),escolha:{},incluir:{},motivo:{},salvos:{}};
   totais.forEach(t=>{ if(!achaMed(t.nome)){ const s=sugerir(t.nome); PLAN.escolha[t.k]=(s[0]&&s[0].score>=0.75)?s[0].med.id:'__novo'; } });
   abrirInline(renderCSV);
 }
@@ -649,7 +649,7 @@ function optMotivos(sel){ return `<option value="">Selecione…</option>`+MOTIVO
 function renderCSV(){
   const P=PLAN, R=resolverCSV(P), c=P.csv;
   const cont=(st)=>c.itens.filter(i=>norm(i.status)===norm(st)).length;
-  const semCad=R.linhas.filter(l=>l.semCad);
+  const semCad=R.linhas.filter(l=>l.semCad), salvos=Object.entries(P.salvos||{});
   const novos=R.linhas.filter(l=>l.estado==='novo'&&!l.dup), cont2=R.linhas.filter(l=>l.estado==='continua'&&!l.dup);
   const pend=novos.filter(l=>P.incluir[l.t.k]!==false && !P.motivo[l.t.k]).length;
   const optMed=(sel)=>{ return `<option value="__novo" ${sel==='__novo'?'selected':''}>Cadastrar como novo medicamento</option>`; };
@@ -657,10 +657,10 @@ function renderCSV(){
     const sug=sugerir(l.t.nome), sel=P.escolha[l.t.k];
     const idsSug=new Set(sug.map(s=>s.med.id));
     const outros=S.meds.filter(m=>!idsSug.has(m.id)).sort(cmpNome).map(m=>`<option value="${m.id}" ${sel===m.id?'selected':''}>${esc(m.nome)}</option>`).join('');
-    return `<tr><td class="name">${esc(l.t.nome)}${sel!=='__novo'?'<span class="alias">vinculado por semelhança — confirme</span>':''}</td>
-      <td><select data-chg="csvLink" data-k="${esc(l.t.k)}" style="max-width:420px">${optMed(sel)}
+    return `<tr><td class="name">${esc(l.t.nome)}${sel!=='__novo'?'<span class="alias">sugestão por semelhança — confira e clique em “Salvar vínculo”</span>':''}</td>
+      <td><div class="mot"><select data-chg="csvLink" data-k="${esc(l.t.k)}" style="max-width:420px">${optMed(sel)}
       ${sug.length?`<optgroup label="Parecidos no cadastro">${sug.map(s=>`<option value="${s.med.id}" ${sel===s.med.id?'selected':''}>${Math.round(s.score*100)}% — ${esc(s.med.nome)}</option>`).join('')}</optgroup>`:''}
-      <optgroup label="Todos os medicamentos">${outros}</optgroup></select></td></tr>`;
+      <optgroup label="Todos os medicamentos">${outros}</optgroup></select>${sel&&sel!=='__novo'?`<button class="btn sm" data-act="csvSalvarLink" data-k="${esc(l.t.k)}" style="white-space:nowrap">Salvar vínculo</button>`:''}</div></td></tr>`;
   }).join('');
   const linhasNovos=novos.map(l=>{ const k=l.t.k, inc=P.incluir[k]!==false, mv=P.motivo[k]||'';
     return `<tr><td><input type="checkbox" data-chg="csvInc" data-k="${esc(k)}" ${inc?'checked':''} aria-label="Incluir"></td>
@@ -673,8 +673,10 @@ function renderCSV(){
     <p class="muted small" style="margin-top:0">Arquivo: <b>${esc(P.arquivo)}</b>${c.dataLista?` — lista de <b>${fmtBR(c.dataLista)}</b>`:''}. Itens no arquivo: ${c.itens.length} ·
       <b>Totalmente desabastecido: ${cont('Totalmente desabastecido')}</b> · Sem demanda: ${cont('Sem Demanda')} · Sem falta: ${c.itens.filter(i=>!i.status).length}. Só os “totalmente desabastecidos” entram na planilha diária.</p>
     <div class="row" style="margin:8px 0 4px"><div class="field" style="max-width:190px"><label for="cLanc">Data de lançamento (dia 1 em falta dos novos)</label><input type="date" id="cLanc" value="${P.dataLanc}" data-chg="csvData"></div></div>
-    ${semCad.length?`<h3>Nomes que não constam no cadastro (${semCad.length})</h3><p class="muted small">Vincule ao medicamento certo (o nome do CSV passa a ser reconhecido nas próximas vezes) ou cadastre como novo.</p>
+    ${semCad.length?`<h3>Nomes que não constam no cadastro (${semCad.length})</h3><p class="muted small">Escolha o medicamento certo e clique em <b>Salvar vínculo</b>: o nome do CSV fica gravado como “outro nome” e passa a ser reconhecido sozinho nas próximas listas. Ou cadastre como novo.</p>
       <div class="tbl-wrap"><table class="t"><thead><tr><th>Nome no CSV</th><th>Vincular a</th></tr></thead><tbody>${linhasSem}</tbody></table></div>`:''}
+    ${salvos.length?`<h3>Vínculos salvos (${salvos.length})</h3><div class="msg ok" style="margin-top:0">✓ Estes nomes do CSV já estão gravados no cadastro como “outros nomes” e serão reconhecidos automaticamente nas próximas listas.</div>
+      <div class="tbl-wrap"><table class="t"><thead><tr><th>Nome no CSV</th><th>Reconhecido como</th><th></th></tr></thead><tbody>${salvos.map(([k,v])=>`<tr><td class="name">${esc(v.nome)}</td><td><span class="badge b-green">✓ salvo</span> ${esc((IDX.med.get(v.med)||{}).nome||'')}</td><td><button class="btn sm link" data-act="csvDesfazLink" data-k="${esc(k)}">desfazer</button></td></tr>`).join('')}</tbody></table></div>`:''}
     <h3>Entram em falta (${novos.length})</h3>
     ${novos.length?`<p class="muted small">Início = data de lançamento. O motivo é escolhido por você.</p><div class="tbl-wrap"><table class="t"><thead><tr><th></th><th>Medicamento</th><th>Início</th><th>Motivo</th></tr></thead><tbody>${linhasNovos}</tbody></table></div>`:'<p class="muted small">Nenhum item novo.</p>'}
     <h3>Saem da planilha diária (${R.sai.length})</h3>
@@ -688,13 +690,25 @@ CHG.csvData=t=>{ if(validISO(t.value)){ PLAN.dataLanc=t.value; desenharModal(tru
 CHG.csvLink=t=>{ PLAN.escolha[t.dataset.k]=t.value; desenharModal(true); };
 CHG.csvInc=t=>{ PLAN.incluir[t.dataset.k]=t.checked; desenharModal(true); };
 CHG.csvMot=t=>{ PLAN.motivo[t.dataset.k]=t.value; desenharModal(true); };
+ACT.csvSalvarLink=b=>{
+  const P=PLAN, k=b.dataset.k, t=P.totais.find(x=>x.k===k), m=IDX.med.get(P.escolha[k]); if(!t||!m) return;
+  if(!nomeLivre(t.nome,m.id)) return toast('Este nome já pertence a outro medicamento do cadastro.');
+  (m.alias=m.alias||[]).push(t.nome); P.salvos[k]={med:m.id,nome:t.nome};
+  logar('Vínculo de nome',t.nome,`passa a ser reconhecido como ${m.nome}`); reindex(); salvar(); desenharModal(true);
+  toast(`✓ Vínculo salvo: “${t.nome}” agora é reconhecido como ${m.nome}.`,5000);
+};
+ACT.csvDesfazLink=b=>{
+  const P=PLAN, k=b.dataset.k, v=P.salvos[k]; if(!v) return; const m=IDX.med.get(v.med);
+  if(m) m.alias=(m.alias||[]).filter(a=>norm(a)!==norm(v.nome));
+  delete P.salvos[k]; P.escolha[k]=v.med; logar('Vínculo de nome desfeito',v.nome,''); reindex(); salvar(); desenharModal(true); toast('Vínculo desfeito.');
+};
 ACT.csvAplicar=()=>{
   const P=PLAN, dl=P.dataLanc; guardarAnterior(); RECENT.clear(); UI.sit='aberto';
-  let criados=0, novos=0, enc=0, cont=0, rem=0;
+  let criados=0, novos=0, enc=0, cont=0, rem=0, vinc=0;
   P.totais.forEach(t=>{           // 1) resolve/cadastra medicamentos
     let medId=achaMed(t.nome);
     if(!medId){ const e=P.escolha[t.k];
-      if(e&&e!=='__novo'){ medId=e; const m=S.meds.find(x=>x.id===e); (m.alias=m.alias||[]).push(t.nome); }
+      if(e&&e!=='__novo'){ medId=e; const m=S.meds.find(x=>x.id===e); (m.alias=m.alias||[]).push(t.nome); vinc++; }
       else { medId=nid('m'); S.meds.push({id:medId,nome:t.nome,alias:[],origem:'importado'}); criados++; } }
     t._med=medId; reindex();
   });
@@ -719,8 +733,8 @@ ACT.csvAplicar=()=>{
     }
   });
   S.csv={arquivo:P.arquivo,dataLista:P.csv.dataLista,dataLanc:dl,aplicadoEm:agoraBR(),total:ids.size};
-  logar('Lista diária (CSV)',P.arquivo,`substituiu a anterior · ${novos} ${plural(novos,'nova','novas')} · ${enc} ${plural(enc,'encerrada','encerradas')} · ${cont} continuam${rem?` · ${rem} da lista anterior removidas`:''}${criados?` · ${criados} cadastrados`:''}`);
-  fecharModal(); commit(); toast(`Lista aplicada (substitui a anterior): ${novos} novas, ${enc} encerradas, ${cont} continuam.`);
+  logar('Lista diária (CSV)',P.arquivo,`substituiu a anterior · ${novos} ${plural(novos,'nova','novas')} · ${enc} ${plural(enc,'encerrada','encerradas')} · ${cont} continuam${rem?` · ${rem} da lista anterior removidas`:''}${criados?` · ${criados} cadastrados`:''}${(vinc+Object.keys(P.salvos).length)?` · ${vinc+Object.keys(P.salvos).length} vínculos de nome salvos`:''}`);
+  fecharModal(); commit(); { const nv=vinc+Object.keys(P.salvos).length; toast(`Lista aplicada (substitui a anterior): ${novos} novas, ${enc} encerradas, ${cont} continuam.${nv?` ✓ ${nv} ${plural(nv,'vínculo de nome salvo','vínculos de nome salvos')}.`:''}`,5500); }
 };
 
 /* =====================================================================
@@ -869,7 +883,7 @@ function desenharExportBar(){
 }
 function htmlExportBar(){
   const R=PLAN_HOJE(), semMot=[...R.finalP,...R.finalS].filter(x=>!x.mi).length, ano=EXP_ANO||S.ano;
-  return `<div class="xb-group"><div class="xb-t"><b>Lista diária — medicamentoEmFalta</b><span>Planilha de Faltas de hoje: ${R.finalP.length} ${plural(R.finalP.length,'item','itens')} + ${R.finalS.length} ${plural(R.finalS.length,'suspenso')}${semMot?`, <button class="btn sm link" data-act="rtFiltro" data-sit="semmot">${semMot} com motivo a confirmar</button>`:''}</span></div>
+  return `<div class="xb-group"><div class="xb-t"><b>Lista diária — medicamentoEmFalta</b><span>Planilha de Faltas de hoje: ${R.finalP.length} ${plural(R.finalP.length,'item','itens')}${semMot?`, <button class="btn sm link" data-act="rtFiltro" data-sit="semmot">${semMot} com motivo a confirmar</button>`:''}</span></div>
       <button class="btn sm" data-act="rtPlanXlsx">Excel</button><button class="btn sm ghost" data-act="rtPlanPdf">PDF</button></div>
     <div class="xb-group"><div class="xb-t"><b>Histórico e Indicador</b><span>ano <select data-chg="rtAno" aria-label="Ano da exportação">${optAnos(ano)}</select></span></div>
       <button class="btn sm ghost" data-act="rtCons" title="Med_em_falta_Consolidado_${ano}.xlsx">Histórico — Med_em_falta_Consolidado</button>
@@ -889,7 +903,7 @@ function filtrarEps(){
 }
 function celLista(e){
   if(e.fim) return '<span class="muted small">—</span>';
-  if(e.motivo===MOTIVO_SUSP) return '<span class="badge b-green" title="Sai na seção “Medicamento suspenso temporário” da planilha">suspensos</span>';
+  if(e.motivo===MOTIVO_SUSP) return '<span class="badge b-gray" title="Dispensação suspensa temporariamente: não sai na planilha diária">não sai</span>';
   return `<input type="checkbox" data-chg="gLista" data-id="${e.id}" ${e.lista===true?'checked':''} aria-label="Sai na planilha diária" title="Sai na planilha diária">`;
 }
 function linhaGrade(e){
@@ -928,13 +942,42 @@ function atualizarLinha(e){
   tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash');
 }
 function gravarLinha(e,t){ reindex(); salvar(); atualizarLinha(e); atualizarResumo(); marcarSalvo(t); }
+/* O histórico vem dia a dia: um mesmo medicamento costuma ter vários períodos separados por poucos dias
+   (fins de semana, dias sem registro). Ao estender um período sobre os vizinhos, eles são unidos a ele
+   (os que ficam inteiros dentro são absorvidos; os que encostam só em parte são encurtados) em vez de recusar. */
+function planoUniao(e,ini,fim){
+  const acoes=[];
+  for(const o of (IDX.eps.get(e.med)||[])){
+    if(o.id===e.id || (o.fim&&o.fim<ini) || (fim&&fim<o.ini)) continue;
+    const intervalo=`${fmtBR(o.ini)} a ${o.fim?fmtBR(o.fim):'em aberto'}`;
+    if(o.ini>=ini && (fim===null || (o.fim && o.fim<=fim))){ acoes.push({o,tipo:'apaga'}); continue; }
+    if(o.ini<ini){
+      if(fim===null ? !o.fim : (!o.fim || o.fim>fim)) return {erro:`Esta data fica inteira dentro de outra falta deste medicamento (${intervalo}). Ajuste ou exclua aquela linha.`};
+      acoes.push({o,tipo:'fim',val:addDays(ini,-1)});
+    } else acoes.push({o,tipo:'ini',val:addDays(fim,1)});
+  }
+  return {acoes,n:acoes.length};
+}
+function aplicarUniao(e,pl){
+  pl.acoes.forEach(a=>{ const o=a.o;
+    if(a.tipo==='apaga'){ if(!e.prev&&o.prev) e.prev=o.prev; if(o.lista===true&&!o.fim) e.lista=true; S.eps.splice(S.eps.indexOf(o),1); RECENT.delete(o.id); }
+    else if(a.tipo==='fim') o.fim=a.val;
+    else { o.ini=a.val; o.iniIncerto=false; } });
+  if(pl.n) logar('Faltas unidas',medDe(e).nome,`${pl.n} ${plural(pl.n,'período vizinho ajustado','períodos vizinhos ajustados')}`);
+}
+function gravarComUniao(e,t,pl,msg){
+  if(!pl.n){ gravarLinha(e,t); if(msg) toast(msg); return; }
+  reindex(); salvar(); renderGrade(); atualizarResumo();
+  toast(`${msg?msg+' ':''}${pl.n} ${plural(pl.n,'outra falta registrada deste medicamento foi unida','outras faltas registradas deste medicamento foram unidas')} a este período.`,6000);
+}
 BLUR.gIni=t=>{
   const e=achaEp(t.dataset.id); if(!e) return; const v=t.value; if(v===e.ini) return;
   if(!v||t.validity.badInput||!validISO(v)) return recusar(t,'Informe a data completa do início (dia/mês/ano).',e.ini);
   if(e.fim&&v>e.fim) return recusar(t,'O início não pode ser depois do último dia em falta.',e.ini);
-  const cf=sobrepoe(e.med,v,e.fim,e.id); if(cf) return recusar(t,`Sobrepõe outra falta deste medicamento (${fmtBR(cf.ini)} a ${cf.fim?fmtBR(cf.fim):'em aberto'}).`,e.ini);
-  e.ini=v; if(e.iniIncerto){ e.iniIncerto=false; const b=t.parentElement.querySelector('.badge'); if(b) b.remove(); }
-  gravarLinha(e,t);
+  const pl=planoUniao(e,v,e.fim); if(pl.erro) return recusar(t,pl.erro,e.ini);
+  aplicarUniao(e,pl); e.ini=v;
+  if(e.iniIncerto){ e.iniIncerto=false; const b=t.parentElement.querySelector('.badge'); if(b) b.remove(); }
+  gravarComUniao(e,t,pl,'');
 };
 BLUR.gPrev=t=>{
   const e=achaEp(t.dataset.id); if(!e) return; const v=t.value; if(v===(e.prev||'')) return;
@@ -945,17 +988,16 @@ BLUR.gVolta=t=>{
   const e=achaEp(t.dataset.id); if(!e) return; const atual=e.fim?addDays(e.fim,1):'', v=t.value; if(v===atual) return;
   if(t.validity.badInput) return recusar(t,'Data incompleta.',atual);
   if(!v){
-    const ab=epAberto(e.med); if(ab&&ab.id!==e.id) return recusar(t,'Este medicamento já tem outra falta em aberto.',atual);
-    const cf=sobrepoe(e.med,e.ini,null,e.id); if(cf) return recusar(t,'Não dá para reabrir: há outra falta deste medicamento depois desta.',atual);
-    e.fim=null; logar('Falta reaberta',medDe(e).nome,`desde ${fmtBR(e.ini)}`); gravarLinha(e,t); toast('Falta reaberta.'); return;
+    const pl=planoUniao(e,e.ini,null); if(pl.erro) return recusar(t,pl.erro,atual);
+    aplicarUniao(e,pl); e.fim=null; logar('Falta reaberta',medDe(e).nome,`desde ${fmtBR(e.ini)}`); gravarComUniao(e,t,pl,'Falta reaberta.'); return;
   }
   if(!validISO(v)) return recusar(t,'Data inválida.',atual);
   const fim=addDays(v,-1);
   if(fim<e.ini) return recusar(t,'A volta ao estoque precisa ser depois do dia 1 em falta. Se foi lançado por engano, use Excluir.',atual);
-  const cf=sobrepoe(e.med,e.ini,fim,e.id); if(cf) return recusar(t,`Sobrepõe outra falta deste medicamento (${fmtBR(cf.ini)} a ${cf.fim?fmtBR(cf.fim):'em aberto'}).`,atual);
-  const era=e.fim; e.fim=fim;
-  logar(era?'Falta ajustada':'Falta encerrada',medDe(e).nome,`de ${fmtBR(e.ini)} a ${fmtBR(fim)}`); gravarLinha(e,t);
-  if(!era) toast(`Falta encerrada. Último dia em falta: ${fmtBR(fim)}.`);
+  const pl=planoUniao(e,e.ini,fim); if(pl.erro) return recusar(t,pl.erro,atual);
+  const era=e.fim; aplicarUniao(e,pl); e.fim=fim;
+  logar(era?'Falta ajustada':'Falta encerrada',medDe(e).nome,`de ${fmtBR(e.ini)} a ${fmtBR(fim)}`);
+  gravarComUniao(e,t,pl,era?'':`Falta encerrada. Último dia em falta: ${fmtBR(fim)}.`);
 };
 CHG.gMot=t=>{
   const e=achaEp(t.dataset.id); if(!e) return; e.motivo=t.value; e.mi=true;
@@ -970,23 +1012,10 @@ CHG.gLista=t=>{ const e=achaEp(t.dataset.id); if(!e) return; e.lista=t.checked; 
 
 /* ---------- exportar direto da barra (a tabela acima já é a conferência) ---------- */
 CHG.rtAno=t=>{ EXP_ANO=+t.value; desenharExportBar(); };
-ACT.rtPlanXlsx=()=>executar('Gerando o Excel…',async()=>{
-  const R=PLAN_HOJE(), buf=await gerarPlanilhaXlsx(R.finalP,R.finalS); baixar(buf,nomePlan()+'.xlsx',MIME_XLSX);
-  logar('Exportação',nomePlan()+'.xlsx',`${R.finalP.length} itens + ${R.finalS.length} suspensos`); salvar(); toast('Excel gerado.');
-});
-ACT.rtPlanPdf=()=>executar('Gerando o PDF…',async()=>{
-  const R=PLAN_HOJE(); libPDF(); const blob=gerarPlanilhaPDF(R.finalP,R.finalS); baixar(blob,nomePlan()+'.pdf');
-  logar('Exportação',nomePlan()+'.pdf',`${R.finalP.length} itens + ${R.finalS.length} suspensos`); salvar(); toast('PDF gerado.');
-});
-ACT.rtCons=()=>executar('Gerando o Excel…',async()=>{
-  const ano=EXP_ANO||S.ano, buf=await gerarConsolidado(ano); baixar(buf,`Med_em_falta_Consolidado_${ano}.xlsx`,MIME_XLSX);
-  logar('Exportação','Med_em_falta_Consolidado_'+ano+'.xlsx',`${S.meds.length} medicamentos`); salvar(); toast('Consolidado gerado.');
-});
-ACT.rtInd=()=>executar('Gerando o Excel…',async()=>{
-  const ano=EXP_ANO||S.ano, r=await gerarIndicador(ano); baixar(r.buf,`Indicador_de_Falta_${ano}.xlsx`,MIME_XLSX);
-  logar('Exportação',`Indicador_de_Falta_${ano}.xlsx`,r.graficos?'12 abas com gráficos':'12 abas (sem gráficos)'); salvar();
-  toast(r.graficos?'Indicador gerado.':'Indicador gerado, mas sem os gráficos (biblioteca não carregou).');
-});
+ACT.rtPlanXlsx=()=>expPlanilha(PLAN_HOJE(),'xlsx');
+ACT.rtPlanPdf=()=>expPlanilha(PLAN_HOJE(),'pdf');
+ACT.rtCons=()=>expConsolidado(EXP_ANO||S.ano);
+ACT.rtInd=()=>expIndicador(EXP_ANO||S.ano);
 ACT.rtIndVer=()=>{ PLAN={tipo:'expInd',ano:EXP_ANO||S.ano,mes:Math.min(+hoje().slice(5,7),12)-1}; abrirModal(renderExpInd); };
 
 /* ---------- lançamento manual ---------- */
@@ -1103,9 +1132,42 @@ function baixar(dados,nome,mime){
   setTimeout(()=>URL.revokeObjectURL(url),4000);
 }
 const MIME_XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-async function executar(msg,fn){
-  try{ toast(msg); await fn(); }
-  catch(err){ console.error(err); modalMsg('Não foi possível gerar o arquivo',`<p>${esc(err.message||err)}</p>`); }
+/* Toda exportação abre a janela "Salvar como" para o usuário escolher a pasta e o nome.
+   A janela é pedida ANTES de gerar o arquivo (o navegador só a permite logo após o clique). */
+const TIPOS_ARQ={xlsx:{description:'Planilha do Excel',accept:{[MIME_XLSX]:['.xlsx']}},pdf:{description:'Documento PDF',accept:{'application/pdf':['.pdf']}},json:{description:'Backup',accept:{'application/json':['.json']}}};
+class ExpCancelada extends Error{}
+async function pedirDestino(nome){
+  if(typeof window.showSaveFilePicker!=='function') return null;
+  const ext=nome.split('.').pop().toLowerCase();
+  try{ return await window.showSaveFilePicker({suggestedName:nome,types:TIPOS_ARQ[ext]?[TIPOS_ARQ[ext]]:undefined}); }
+  catch(e){ if(e&&e.name==='AbortError') throw new ExpCancelada(); return null; }   // bloqueado neste ambiente: usa o download
+}
+async function exportar(nome,mime,gerar,okMsg){
+  let h=null;
+  try{ h=await pedirDestino(nome); }catch(e){ if(e instanceof ExpCancelada){ toast('Exportação cancelada.'); return false; } }
+  try{
+    toast('Gerando '+nome+'…');
+    const dados=await gerar(), blob=dados instanceof Blob?dados:new Blob([dados],{type:mime});
+    if(h){ const w=await h.createWritable(); await w.write(blob); await w.close(); toast(`${okMsg||'Arquivo salvo'}: ${h.name}`,5000); }
+    else { baixar(blob,nome,mime); toast(`${okMsg||'Arquivo gerado'}. Este navegador não permite abrir a janela “Salvar como” por aqui — para ele sempre perguntar a pasta, ative “Perguntar onde salvar cada arquivo” nas configurações de downloads do navegador.`,9000); }
+    return true;
+  }catch(err){ console.error(err); modalMsg('Não foi possível gerar o arquivo',`<p>${esc(err.message||err)}</p>`); return false; }
+}
+async function expPlanilha(R,fmt){
+  const nome=nomePlan()+'.'+fmt;
+  const ok=await exportar(nome,fmt==='pdf'?'application/pdf':MIME_XLSX,async()=>{ if(fmt==='pdf'){ libPDF(); return gerarPlanilhaPDF(R.finalP,R.finalS); } return gerarPlanilhaXlsx(R.finalP,R.finalS); },fmt==='pdf'?'PDF salvo':'Excel salvo');
+  if(ok){ logar('Exportação',nome,`${R.finalP.length} ${plural(R.finalP.length,'item','itens')}`); salvar(); }
+}
+async function expConsolidado(ano){
+  const nome=`Med_em_falta_Consolidado_${ano}.xlsx`;
+  if(await exportar(nome,MIME_XLSX,()=>gerarConsolidado(ano),'Consolidado salvo')){ logar('Exportação',nome,`${S.meds.length} medicamentos`); salvar(); }
+}
+async function expIndicador(ano){
+  const nome=`Indicador_de_Falta_${ano}.xlsx`; let gr=true;
+  if(await exportar(nome,MIME_XLSX,async()=>{ const r=await gerarIndicador(ano); gr=r.graficos; return r.buf; },'Indicador salvo')){
+    logar('Exportação',nome,gr?'12 abas com gráficos':'12 abas (sem gráficos)'); salvar();
+    if(!gr) setTimeout(()=>toast('Atenção: o Indicador saiu sem os gráficos (biblioteca não carregou).',6000),5000);
+  }
 }
 const utcDate=iso=>{ const [y,m,d]=iso.split('-').map(Number); return new Date(Date.UTC(y,m-1,d)); };
 const dataHoraArq=()=>{ const t=new Date(); return `${pad(t.getDate())}/${pad(t.getMonth()+1)}/${t.getFullYear()} ${pad(t.getHours())}:${pad(t.getMinutes())}`; };
@@ -1143,10 +1205,7 @@ function renderExpCons(){
     <p class="muted small">A tela mostra os totais por mês. No arquivo, cada mês tem uma coluna por dia (1 a ${31}) com “1” nos dias em falta.</p>`,
     rodape:`<span class="spacer">Arquivo: Med_em_falta_Consolidado_${P.ano}.xlsx</span><button class="btn ghost" data-act="fechar">Fechar</button><button class="btn" data-act="expConsOk">Baixar Excel</button>`};
 }
-ACT.expConsOk=()=>executar('Gerando o Excel…',async()=>{
-  const ano=PLAN.ano, buf=await gerarConsolidado(ano); baixar(buf,`Med_em_falta_Consolidado_${ano}.xlsx`,MIME_XLSX);
-  logar('Exportação','Med_em_falta_Consolidado_'+ano+'.xlsx',`${S.meds.length} medicamentos`); salvar(); toast('Arquivo gerado.');
-});
+ACT.expConsOk=()=>expConsolidado(PLAN.ano);
 async function gerarConsolidado(ano){
   libExcel();
   const wb=new ExcelJS.Workbook(); wb.creator='Controle de faltas de medicamentos'; wb.created=new Date();
@@ -1196,7 +1255,7 @@ function itensPlanilha(P){
   const ordem=(a,b)=>P.ord==='dias'?b.dias-a.dias:P.ord==='ini'?(a.ini<b.ini?-1:a.ini>b.ini?1:0):norm(a.nome).localeCompare(norm(b.nome),'pt-BR');
   [principal,fora,suspensos].forEach(l=>l.sort(ordem));
   return {principal,fora,suspensos,
-    finalP:[...principal,...fora].filter(x=>x.sel), finalS:suspensos.filter(x=>x.sel)};
+    finalP:[...principal,...fora].filter(x=>x.sel), finalS:[]};   // suspensos não saem na lista
 }
 ACT.expPlan=()=>{ PLAN={tipo:'expPlan',ord:'nome',off:new Set(),on:new Set()}; abrirModal(renderExpPlan); };
 CHG.plOrd=t=>{ PLAN.ord=t.value; desenharModal(true); };
@@ -1218,21 +1277,14 @@ function renderExpPlan(){
     <h3 style="margin-top:6px">Medicamentos em falta (${R.finalP.length} de ${R.principal.length}${R.fora.length?`, mais ${R.fora.filter(x=>x.sel).length} adicionados`:''})</h3>
     <p class="muted small" style="margin-top:0">Desmarque para tirar um item apenas deste arquivo.</p>
     ${tab(R.principal,'Nenhum medicamento marcado como totalmente desabastecido.')}
-    <h3>Medicamento suspenso temporário (${R.finalS.length})</h3>
-    ${tab(R.suspensos,'Nenhum item com motivo “Dispensação Suspensa Temporariamente”.')}
+    ${R.suspensos.length?`<p class="muted small">${R.suspensos.length} ${plural(R.suspensos.length,'item','itens')} com “Dispensação Suspensa Temporariamente” não ${R.suspensos.length===1?'sai':'saem'} na planilha.</p>`:''}
     ${R.fora.length?`<details ${R.fora.some(x=>x.sel)?'open':''}><summary>Em falta no sistema, mas fora da planilha diária (${R.fora.length})</summary>
       <p class="muted small">Não constam como “totalmente desabastecido” no CSV. Marque só se quiser incluí-los neste arquivo.</p>${tab(R.fora,'')}</details>`:''}`,
     rodape:`<span class="spacer">${R.finalP.length+R.finalS.length} ${plural(R.finalP.length+R.finalS.length,'item')} no arquivo</span><button class="btn ghost" data-act="fechar">Fechar</button><button class="btn ghost" data-act="expPlanPdf">Baixar PDF</button><button class="btn" data-act="expPlanXlsx">Baixar Excel</button>`};
 }
 const nomePlan=()=>{ const h=hoje(); return `Planilha_de_Faltas_${h.slice(8)}_${h.slice(5,7)}_${h.slice(0,4)}`; };
-ACT.expPlanXlsx=()=>executar('Gerando o Excel…',async()=>{
-  const R=itensPlanilha(PLAN), buf=await gerarPlanilhaXlsx(R.finalP,R.finalS); baixar(buf,nomePlan()+'.xlsx',MIME_XLSX);
-  logar('Exportação',nomePlan()+'.xlsx',`${R.finalP.length} itens + ${R.finalS.length} suspensos`); salvar(); toast('Excel gerado.');
-});
-ACT.expPlanPdf=()=>executar('Gerando o PDF…',async()=>{
-  const R=itensPlanilha(PLAN); libPDF(); const blob=gerarPlanilhaPDF(R.finalP,R.finalS); baixar(blob,nomePlan()+'.pdf');
-  logar('Exportação',nomePlan()+'.pdf',`${R.finalP.length} itens + ${R.finalS.length} suspensos`); salvar(); toast('PDF gerado.');
-});
+ACT.expPlanXlsx=()=>expPlanilha(itensPlanilha(PLAN),'xlsx');
+ACT.expPlanPdf=()=>expPlanilha(itensPlanilha(PLAN),'pdf');
 const TEAL_ESCURO='FF31859C', AZUL_CLARO='FFB7DEE8', VERDE_CLARO='FFD7E4BD', NAVY_AVISO='FF002060';
 async function gerarPlanilhaXlsx(P,Sp){
   libExcel(); const H=hoje();
@@ -1250,7 +1302,7 @@ async function gerarPlanilhaXlsx(P,Sp){
   ws.getRow(2).height=27;
   const b2=ws.getCell('B2'); b2.value='Atualização'; b2.font={bold:true,size:11,color:{argb:'FFFFFFFF'}}; b2.fill={type:'pattern',pattern:'solid',fgColor:{argb:TEAL_ESCURO}}; b2.alignment={horizontal:'center',vertical:'middle'};
   const c2=ws.getCell('C2'); c2.fill={type:'pattern',pattern:'solid',fgColor:{argb:TEAL_ESCURO}};
-  ws.mergeCells('D2:F2'); const d2=ws.getCell('D2'); d2.value=new Date(); d2.numFmt='dd/mm/yyyy hh:mm'; d2.font={size:12,color:{argb:'FFFFFFFF'}}; d2.fill={type:'pattern',pattern:'solid',fgColor:{argb:TEAL_ESCURO}}; d2.alignment={horizontal:'center',vertical:'middle'};
+  ws.mergeCells('D2:F2'); const d2=ws.getCell('D2'); { const ag=new Date(); d2.value=new Date(Date.UTC(ag.getFullYear(),ag.getMonth(),ag.getDate(),ag.getHours(),ag.getMinutes(),ag.getSeconds())); } d2.numFmt='dd/mm/yyyy hh:mm'; d2.font={size:12,color:{argb:'FFFFFFFF'}}; d2.fill={type:'pattern',pattern:'solid',fgColor:{argb:TEAL_ESCURO}}; d2.alignment={horizontal:'center',vertical:'middle'};
   // Linha 3: cabeçalhos, faixa azul clara
   const heads=['MEDICAMENTO EM FALTA','DIA ENTRADA EM FALTA','HOJE','DIAS EM FALTA','PREVISÃO CHEGADA','MOTIVO'];
   const h3=ws.getRow(3); h3.height=41.25;
@@ -1270,11 +1322,11 @@ async function gerarPlanilhaXlsx(P,Sp){
   if(P.length){ // mesma escala de cor do arquivo original: entrada mais antiga = mais vermelha
     ws.addConditionalFormatting({ref:`B4:B${ultimaPrincipal}`,rules:[{type:'colorScale',cfvo:[{type:'min'},{type:'max'}],color:[{argb:'FFF8696B'},{argb:'FFFCFCFF'}]}]});
   }
-  r+=1; const hs=ws.getRow(r); hs.height=12;
+  if(Sp.length){ r+=1; const hs=ws.getRow(r); hs.height=12;
   ['MEDICAMENTO SUSPENSO TEMPORÁRIO','DIA ENTRADA EM FALTA','HOJE','DIAS EM FALTA','PREVISÃO CHEGADA','MOTIVO'].forEach((h,i)=>{ const c=hs.getCell(i+1); c.value=h; c.font={bold:true,size:9}; c.fill={type:'pattern',pattern:'solid',fgColor:{argb:VERDE_CLARO}}; c.alignment={horizontal:'center',vertical:'middle',wrapText:true}; c.border=bordas; });
   r++; const primeiraSusp=r;
   Sp.forEach(x=>lin(r++,x));
-  if(Sp.length){ ws.addConditionalFormatting({ref:`B${primeiraSusp}:B${r-1}`,rules:[{type:'colorScale',cfvo:[{type:'min'},{type:'max'}],color:[{argb:'FFF8696B'},{argb:'FFFCFCFF'}]}]}); }
+  if(Sp.length){ ws.addConditionalFormatting({ref:`B${primeiraSusp}:B${r-1}`,rules:[{type:'colorScale',cfvo:[{type:'min'},{type:'max'}],color:[{argb:'FFF8696B'},{argb:'FFFCFCFF'}]}]}); } }
   // destaca em rosa o motivo "Sem Estoque Estadual", igual à formatação condicional do arquivo original (coluna F, oculta)
   ws.addConditionalFormatting({ref:`F1:F${Math.max(r-1,4)}`,rules:[{type:'containsText',operator:'containsText',text:'Sem Estoque Estadual',formulae:[`NOT(ISERROR(SEARCH("Sem Estoque Estadual",F1)))`],style:{fill:{type:'pattern',pattern:'solid',bgColor:{argb:ROSA}}}}]});
   return wb.xlsx.writeBuffer();
@@ -1289,7 +1341,7 @@ function desenharPlanilhaPDF(P,Sp,fs,ori){
   doc.setFont('helvetica','normal'); doc.setFontSize(sub); doc.setTextColor(90,99,80);
   doc.text(`Atualização: ${dataHoraArq()}   |   Referência: ${fmtBR(H)}   |   ${P.length} ${plural(P.length,'medicamento em falta','medicamentos em falta')}${Sp.length?` + ${Sp.length} ${plural(Sp.length,'suspenso')}`:''}`,mg,y);
   y+=sub*0.3;
-  const corpo=l=>l.map(x=>[x.nome,fmtBR(x.ini),fmtBR(H),String(x.dias),txtPrev(x.prev),x.motivo]);
+  const corpo=l=>l.map(x=>[x.nome,fmtBR(x.ini),String(x.dias),txtPrev(x.prev)]);
   const escala=l=>{ const ds=l.map(x=>dnum(x.ini)); const mn=Math.min(...ds), mx=Math.max(...ds);
     return x=>{ const t=mx>mn?(dnum(x.ini)-mn)/(mx-mn):1, c1=[248,105,107], c2=[252,252,255];
       return c1.map((v,i)=>Math.round(v+(c2[i]-v)*t)); }; };
@@ -1297,21 +1349,20 @@ function desenharPlanilhaPDF(P,Sp,fs,ori){
   const base=(cor,L,cor1)=>({theme:'grid',margin:{left:mg,right:mg,top:mg,bottom:mg+4},rowPageBreak:'avoid',
     styles:{font:'helvetica',fontSize:fs,cellPadding:pad,lineColor:[170,170,170],lineWidth:.15,textColor:[20,20,20],overflow:'linebreak',valign:'middle',halign:'center'},
     headStyles:{fillColor:cor,textColor:[20,45,55],halign:'center',fontStyle:'bold',fontSize:Math.max(fs*.85,4)},
-    columnStyles:{0:{cellWidth:larg[0],halign:'left'},1:{cellWidth:larg[1]},2:{cellWidth:larg[2]},3:{cellWidth:larg[3]},4:{cellWidth:larg[4]},5:{cellWidth:larg[5]}},
+    columnStyles:{0:{cellWidth:larg[0],halign:'left'},1:{cellWidth:larg[1]},2:{cellWidth:larg[2]},3:{cellWidth:larg[3]}},
     didParseCell:d=>{ if(d.section!=='body') return;
       if(d.column.index===1&&L[d.row.index]) d.cell.styles.fillColor=cor1(L[d.row.index]);
-      if(d.column.index===5&&d.cell.raw===MOTIVOS[1].nome) d.cell.styles.fillColor=[255,199,206];
-      if(d.column.index===3) d.cell.styles.fontStyle='bold'; }});
-  const cabec=['Medicamento em falta','Entrada em falta','Hoje','Dias em falta','Previsão chegada','Motivo'];
+      if(d.column.index===2) d.cell.styles.fontStyle='bold'; }});
+  const cabec=['Medicamento em falta','Entrada em falta','Dias em falta','Previsão chegada'];
   /* Larguras fixas e iguais nas duas tabelas, medidas no tamanho de fonte atual:
      nenhuma palavra é quebrada no meio; o nome do medicamento fica com o espaço que sobra. */
   const util=W-2*mg, hfs=Math.max(fs*.85,4), todas=[...P,...Sp], linhas=corpo(todas);
   const mede=(txt,tam,bold)=>{ doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(tam); return doc.getTextWidth(String(txt)); };
   const maiorPalavra=(txt,tam,bold)=>Math.max(0,...String(txt).split(/\s+/).map(p=>mede(p,tam,bold)));
   const larg=[0];
-  for(let c=1;c<=5;c++){
-    const corpoW=Math.max(0,...linhas.map(l=>mede(l[c],fs,c===3)));
-    const cabW=c===5?mede(cabec[c],hfs,true):maiorPalavra(cabec[c],hfs,true);
+  for(let c=1;c<=3;c++){
+    const corpoW=Math.max(0,...linhas.map(l=>mede(l[c],fs,c===2)));
+    const cabW=maiorPalavra(cabec[c],hfs,true);
     larg[c]=Math.max(corpoW,cabW)+2*pad+0.6;
   }
   larg[0]=util-larg.slice(1).reduce((a,b)=>a+b,0);
@@ -1319,7 +1370,7 @@ function desenharPlanilhaPDF(P,Sp,fs,ori){
   let cabeLargura=larg[0]>=Math.max(minNome,util*0.28);
   if(!cabeLargura) larg[0]=Math.max(larg[0],10);
   doc.autoTable({...base([183,222,232],P,escala(P.length?P:[{ini:H}])),startY:y+1,head:[cabec],
-    body:P.length?corpo(P):[[{content:'Nenhum medicamento em falta na lista.',colSpan:6,styles:{halign:'center',textColor:[90,99,80]}}]]});
+    body:P.length?corpo(P):[[{content:'Nenhum medicamento em falta na lista.',colSpan:4,styles:{halign:'center',textColor:[90,99,80]}}]]});
   if(Sp.length){
     let y2=doc.lastAutoTable.finalY+sub*0.55;
     doc.setFont('helvetica','bold'); doc.setFontSize(sub); doc.setTextColor(110,140,60); doc.text('Medicamento suspenso temporário',mg,y2);
@@ -1380,11 +1431,7 @@ function renderExpInd(){
     rodape:`<span class="spacer">Arquivo: Indicador_de_Falta_${P.ano}.xlsx (12 abas, com gráficos)</span><button class="btn ghost" data-act="fechar">Fechar</button><button class="btn" data-act="expIndOk">Baixar Excel</button>`};
 }
 ACT.indVer=b=>{ PLAN.mes=+b.dataset.mi; desenharModal(true); };
-ACT.expIndOk=()=>executar('Gerando o Excel…',async()=>{
-  const ano=PLAN.ano, r=await gerarIndicador(ano); baixar(r.buf,`Indicador_de_Falta_${ano}.xlsx`,MIME_XLSX);
-  logar('Exportação',`Indicador_de_Falta_${ano}.xlsx`,r.graficos?'12 abas com gráficos':'12 abas (sem gráficos)'); salvar();
-  toast(r.graficos?'Arquivo gerado.':'Arquivo gerado, mas sem os gráficos (biblioteca não carregou).');
-});
+ACT.expIndOk=()=>expIndicador(PLAN.ano);
 async function gerarIndicador(ano){
   libExcel();
   const wb=new ExcelJS.Workbook(); wb.creator='Controle de faltas de medicamentos'; wb.created=new Date();
@@ -1700,8 +1747,8 @@ ACT.medExcluirOk=b=>{
 
 /* ---------- backup ---------- */
 ACT.bkExportar=()=>{
-  const h=hoje(); baixar(new Blob([JSON.stringify({app:'controle-faltas',versao:1,exportadoEm:agoraBR(),estado:S})],{type:'application/json'}),`backup_controle_faltas_${h.replace(/-/g,'')}.json`);
-  toast('Backup baixado.');
+  const h=hoje(), nome=`backup_controle_faltas_${h.replace(/-/g,'')}.json`;
+  exportar(nome,'application/json',()=>new Blob([JSON.stringify({app:'controle-faltas',versao:1,exportadoEm:agoraBR(),estado:S})],{type:'application/json'}),'Backup salvo');
 };
 async function restaurarBackup(file){
   let o; try{ o=JSON.parse(await file.text()); }catch(e){ throw new Error('O arquivo não é um backup válido (JSON ilegível).'); }
